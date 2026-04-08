@@ -855,6 +855,7 @@ const MG_FIELD_LABELS = {
     yt_keywords: 'كلمات مفتاحية يوتيوب',
     tt_title: 'عنوان تيك توك',
     tt_desc: 'وصف تيك توك',
+    tt_hashtags: 'هاشتاجات تيك توك',
     tt_screen: 'جملة شاشة تيك توك',
     fb_title: 'عنوان فيسبوك',
     fb_desc: 'وصف فيسبوك',
@@ -880,7 +881,7 @@ const MG_DEFAULT_MAP = {
     },
     tiktok: {
         description: 'tt_desc',
-        hashtags: 'tt_desc',
+        hashtags: 'tt_hashtags',
         screen_text: 'tt_screen',
     },
     facebook: {
@@ -1153,7 +1154,8 @@ async function submitMGTopics() {
         };
 
         if (videoFolder) {
-            topicObj.video_path = videoFolder;
+            // Build per-topic video path: folder/topic_number.mp4
+            topicObj.video_path = videoFolder.replace(/\/$/, '') + '/' + t.topic_number + '.mp4';
         }
 
         topicsToSend.push(topicObj);

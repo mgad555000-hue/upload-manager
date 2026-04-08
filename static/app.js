@@ -182,8 +182,7 @@ function renderTopicList() {
     }
 
     let html = '';
-    // Show max 10
-    for (const t of filtered.slice(0, 10)) {
+    for (const t of filtered) {
         const ch = channels.find(c => c.id === t.channel_id);
         const chName = escapeHtml(ch ? (ch.display_name || ch.name) : '');
         const badges = (t.platform_data || []).map(pd => {
@@ -297,7 +296,8 @@ function renderFields() {
     // Schedule time
     const schedSection = document.getElementById('schedule-section');
     const schedTime = pd.scheduled_time ? new Date(pd.scheduled_time) : null;
-    const schedIso = schedTime ? schedTime.toISOString().slice(0, 16) : '';
+    // Use local time for datetime-local input (not UTC)
+    const schedIso = schedTime ? (schedTime.getFullYear() + '-' + String(schedTime.getMonth()+1).padStart(2,'0') + '-' + String(schedTime.getDate()).padStart(2,'0') + 'T' + String(schedTime.getHours()).padStart(2,'0') + ':' + String(schedTime.getMinutes()).padStart(2,'0')) : '';
     schedSection.innerHTML = `
     <div class="schedule-card">
         <div class="time-label">موعد النشر</div>

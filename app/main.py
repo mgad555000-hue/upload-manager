@@ -318,8 +318,8 @@ def create_topic(data: TopicCreate, db: Session = Depends(get_db), schedule_star
     try:
         auto_schedule_topic(db, topic.id, data.channel_id, data.content_type, start_from=schedule_start_from)
     except Exception as e:
-        db.rollback()
         print(f"[Scheduler] Auto-schedule failed for topic {topic.id}: {e}")
+        # Don't rollback — topic already committed, scheduling is optional
 
     db.refresh(topic)
     resp = TopicResponse.model_validate(topic)
@@ -338,19 +338,20 @@ def create_topics_batch(data: TopicBatchCreate, db: Session = Depends(get_db)):
 
     created = []
     errors = []
+    from app.database import SessionLocal
     for i, t in enumerate(data.topics):
+        topic_db = SessionLocal()
         try:
-            result = create_topic(t, db, schedule_start_from=start_from)
+            result = create_topic(t, topic_db, schedule_start_from=start_from)
             created.append(result)
         except HTTPException as e:
             errors.append(f"topic {i}: {e.detail}")
-            db.rollback()
         except SQLIntegrityError:
             errors.append(f"topic {i}: duplicate")
-            db.rollback()
         except Exception:
-            errors.append(f"topic {i}: خطأ غير متوقع")
-            db.rollback()
+            errors.append(f"topic {i}: خطأ غير متو��ع")
+        finally:
+            topic_db.close()
     return {"created": len(created), "total": len(data.topics), "errors": errors}
 
 @app.get("/api/topics/{topic_id}", response_model=TopicResponse)
@@ -596,8 +597,8 @@ def _cross_post(db: Session, topic_id: int, source_platform_id: int):
 
             if updated:
                 target_pd.field_values = json.dumps(target_vals, ensure_ascii=False)
-    except Exception:
-        pass  # Cross-post failure is not critical
+    except Exception as e:
+        print(f"[Cross-Post] Error: {e}")  # Log but don't fail
 
 
 def _telegram_upload_failure(db: Session, topic, platform_id: int, error: str, employee_id: int):
@@ -819,8 +820,8 @@ def list_logs(
 
 @app.get("/api/dashboard/stats", response_model=DashboardStats)
 def dashboard_stats(db: Session = Depends(get_db)):
-    from datetime import date
-    today_start = datetime.combine(date.today(), datetime.min.time())
+    # Use UTC for consistency with DB timestamps
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
     total = db.query(Topic).count()
     pending = db.query(PlatformData).filter(PlatformData.upload_status == "pending").count()
@@ -977,7 +978,7 @@ def youtube_check_auth(channel_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/youtube/upload/{topic_id}/{platform_id}", response_model=YouTubeUploadResponse)
-def youtube_upload(
+async def youtube_upload(
     topic_id: int,
     platform_id: int,
     req: YouTubeUploadRequest,
@@ -1110,7 +1111,10 @@ def youtube_upload(
     }
 
     try:
-        result = upload_video(
+        import functools
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, functools.partial(
+            upload_video,
             token_data=token_data,
             video_path=topic.video_path,
             title=title,
@@ -1119,7 +1123,7 @@ def youtube_upload(
             category_id=category_id,
             privacy=req.privacy,
             publish_at=req.publish_at,
-        )
+        ))
     except FileNotFoundError:
         # Rollback upload status + quota on failure
         pd.upload_status = "pending"
