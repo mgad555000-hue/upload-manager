@@ -1,0 +1,14 @@
+services:
+  upload-manager:
+    build: .
+    container_name: upload-manager
+    restart: unless-stopped
+    ports:
+      - "8003:8000"
+    volumes:
+      - ./data:/app/data:rw
+      - ./app:/app/app:ro
+      - ./static:/app/static:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=sqlite:////app/data/upload_manager.db

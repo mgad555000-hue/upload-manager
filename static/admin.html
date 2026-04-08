@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Upload Manager — لوحة التحكم</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        /* Admin-specific styles */
+        .admin-nav {
+            display: flex; gap: 6px; padding: 10px 16px;
+            overflow-x: auto; -webkit-overflow-scrolling: touch;
+            background: var(--surface); border-bottom: 1px solid var(--border);
+        }
+        .nav-btn {
+            padding: 8px 16px; border-radius: 20px;
+            border: 1px solid var(--border); background: transparent;
+            color: var(--text2); font-size: 13px; white-space: nowrap;
+            cursor: pointer; transition: 0.15s;
+        }
+        .nav-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+        .admin-section { padding: 16px; display: none; }
+        .admin-section.active { display: block; }
+
+        .admin-card {
+            background: var(--surface); border-radius: var(--radius);
+            padding: 14px; margin-bottom: 10px; border: 1px solid var(--border);
+        }
+        .admin-card .card-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 8px;
+        }
+        .admin-card .card-title { font-size: 15px; font-weight: 600; }
+        .admin-card .card-subtitle { font-size: 12px; color: var(--text2); margin-top: 2px; }
+        .admin-card .card-meta { font-size: 11px; color: var(--text2); }
+        .admin-card .card-actions { display: flex; gap: 6px; }
+
+        .btn-sm {
+            padding: 5px 12px; border-radius: 6px; border: none;
+            font-size: 12px; cursor: pointer; transition: 0.15s;
+        }
+        .btn-edit { background: var(--surface2); color: var(--primary); }
+        .btn-delete { background: #450a0a; color: var(--danger); }
+        .btn-toggle { background: var(--surface2); color: var(--warning); }
+        .btn-add {
+            width: 100%; padding: 12px; border-radius: var(--radius);
+            border: 2px dashed var(--border); background: transparent;
+            color: var(--primary); font-size: 14px; font-weight: 600;
+            cursor: pointer; margin-bottom: 10px;
+        }
+        .btn-add:hover { border-color: var(--primary); }
+
+        /* Form Modal */
+        .form-modal {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.8);
+            display: flex; align-items: flex-end; justify-content: center;
+            z-index: 200; padding: 0;
+        }
+        .form-modal .form-content {
+            background: var(--surface); border-radius: var(--radius) var(--radius) 0 0;
+            padding: 20px; width: 100%; max-width: 500px; max-height: 85vh;
+            overflow-y: auto;
+        }
+        .form-modal h3 { font-size: 16px; margin-bottom: 16px; text-align: center; }
+
+        .form-group { margin-bottom: 14px; }
+        .form-group label {
+            display: block; font-size: 12px; color: var(--text2);
+            margin-bottom: 6px;
+        }
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%; padding: 10px 12px; border-radius: 8px;
+            border: 1px solid var(--border); background: var(--bg);
+            color: var(--text); font-size: 14px; font-family: inherit;
+        }
+        .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+            outline: none; border-color: var(--primary);
+        }
+        .form-group textarea { min-height: 80px; resize: vertical; }
+
+        .form-row { display: flex; gap: 10px; }
+        .form-row .form-group { flex: 1; }
+
+        .form-check {
+            display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+        }
+        .form-check input[type="checkbox"] {
+            width: 18px; height: 18px; accent-color: var(--primary);
+        }
+        .form-check label { font-size: 13px; color: var(--text); margin: 0; }
+
+        .form-actions { display: flex; gap: 10px; margin-top: 16px; }
+        .form-actions button {
+            flex: 1; padding: 12px; border-radius: 8px; border: none;
+            font-size: 14px; font-weight: 600; cursor: pointer;
+        }
+        .btn-cancel { background: var(--surface2); color: var(--text); }
+        .btn-save { background: var(--primary); color: #fff; }
+
+        /* Fields inside platform */
+        .field-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px; background: var(--bg); border-radius: 8px;
+            margin-bottom: 6px;
+        }
+        .field-item .field-info { flex: 1; }
+        .field-item .field-name { font-size: 13px; font-weight: 500; }
+        .field-item .field-tags { display: flex; gap: 4px; margin-top: 4px; }
+        .field-item .tag {
+            padding: 2px 8px; border-radius: 4px; font-size: 10px;
+        }
+        .tag-type { background: #1e293b; color: var(--primary); }
+        .tag-required { background: #450a0a; color: var(--danger); }
+        .tag-copyable { background: #064e3b; color: var(--success); }
+        .tag-hidden { background: #451a03; color: var(--warning); }
+
+        /* Logs */
+        .log-item {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 10px 14px; background: var(--surface);
+            border-radius: 8px; margin-bottom: 6px;
+            border: 1px solid var(--border);
+        }
+        .log-action { font-size: 13px; font-weight: 500; }
+        .log-details { font-size: 11px; color: var(--text2); margin-top: 2px; }
+        .log-time { font-size: 11px; color: var(--text2); white-space: nowrap; }
+
+        /* Badge */
+        .status-badge {
+            padding: 3px 10px; border-radius: 6px; font-size: 11px;
+        }
+        .status-active { background: #064e3b; color: var(--success); }
+        .status-inactive { background: #450a0a; color: var(--danger); }
+        .status-auto { background: #1e293b; color: var(--primary); }
+        .status-manual { background: #451a03; color: var(--warning); }
+
+        /* YouTube */
+        .yt-card {
+            background: var(--surface); border-radius: var(--radius);
+            padding: 16px; margin-bottom: 12px; border: 1px solid var(--border);
+        }
+        .yt-card .yt-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 10px;
+        }
+        .yt-card .yt-channel { font-size: 15px; font-weight: 600; }
+        .yt-connected { color: var(--success); }
+        .yt-disconnected { color: var(--danger); }
+        .yt-quota-bar {
+            height: 6px; background: var(--surface2); border-radius: 3px;
+            overflow: hidden; margin-top: 8px;
+        }
+        .yt-quota-fill {
+            height: 100%; background: var(--primary); border-radius: 3px;
+            transition: width 0.3s;
+        }
+        .yt-quota-text { font-size: 11px; color: var(--text2); margin-top: 4px; }
+        .btn-yt-connect { background: #dc2626; color: #fff; }
+        .btn-yt-disconnect { background: var(--surface2); color: var(--danger); }
+
+        /* Import */
+        .import-form {
+            background: var(--surface); border-radius: var(--radius);
+            padding: 16px; margin-bottom: 12px; border: 1px solid var(--border);
+        }
+        .import-form .form-group { margin-bottom: 14px; }
+        .import-form label {
+            display: block; font-size: 12px; color: var(--text2);
+            margin-bottom: 6px;
+        }
+        .import-form select, .import-form input[type="file"] {
+            width: 100%; padding: 10px 12px; border-radius: 8px;
+            border: 1px solid var(--border); background: var(--bg);
+            color: var(--text); font-size: 14px;
+        }
+        .import-form select:focus { outline: none; border-color: var(--primary); }
+        .btn-import {
+            width: 100%; padding: 14px; border-radius: var(--radius);
+            border: none; font-size: 14px; font-weight: 600;
+            cursor: pointer; background: var(--primary); color: #fff;
+        }
+        .btn-import:disabled { background: var(--surface2); color: var(--text2); cursor: not-allowed; }
+        .btn-template {
+            display: inline-block; padding: 8px 16px; border-radius: 8px;
+            border: 1px dashed var(--border); background: transparent;
+            color: var(--primary); font-size: 13px; cursor: pointer;
+            text-decoration: none; margin-bottom: 12px;
+        }
+        .btn-template:hover { border-color: var(--primary); }
+        .import-result {
+            background: var(--surface); border-radius: var(--radius);
+            padding: 16px; margin-top: 12px; border: 1px solid var(--border);
+        }
+        .import-result .result-success { color: var(--success); font-weight: 600; }
+        .import-result .result-error { color: var(--danger); font-size: 12px; margin-top: 4px; }
+    </style>
+</head>
+<body>
+
+<!-- Toast -->
+<div id="toast" class="toast"></div>
+
+<!-- Login Screen (admin only) -->
+<div id="login-screen" class="login-screen">
+    <h2>لوحة التحكم</h2>
+    <p>ادخل كود الأدمن</p>
+    <div class="pin-display" id="pin-display">
+        <div class="pin-dot" id="dot-0"></div>
+        <div class="pin-dot" id="dot-1"></div>
+        <div class="pin-dot" id="dot-2"></div>
+        <div class="pin-dot" id="dot-3"></div>
+    </div>
+    <div class="numpad" id="numpad">
+        <button onclick="pinInput(1)">1</button>
+        <button onclick="pinInput(2)">2</button>
+        <button onclick="pinInput(3)">3</button>
+        <button onclick="pinInput(4)">4</button>
+        <button onclick="pinInput(5)">5</button>
+        <button onclick="pinInput(6)">6</button>
+        <button onclick="pinInput(7)">7</button>
+        <button onclick="pinInput(8)">8</button>
+        <button onclick="pinInput(9)">9</button>
+        <button disabled></button>
+        <button onclick="pinInput(0)">0</button>
+        <button class="del-btn" onclick="pinDelete()">مسح</button>
+    </div>
+    <div class="login-error" id="login-error"></div>
+</div>
+
+<!-- Admin Panel -->
+<div id="admin-panel" class="hidden">
+    <!-- Header -->
+    <div class="header">
+        <h1>لوحة التحكم</h1>
+        <div style="display:flex;align-items:center;gap:10px">
+            <span class="user-info" id="user-name"></span>
+            <button class="logout-btn" onclick="logout()">خروج</button>
+        </div>
+    </div>
+
+    <!-- Navigation -->
+    <div class="admin-nav">
+        <button class="nav-btn active" onclick="showSection('channels', this)">القنوات</button>
+        <button class="nav-btn" onclick="showSection('platforms', this)">المنصات</button>
+        <button class="nav-btn" onclick="showSection('employees', this)">الموظفين</button>
+        <button class="nav-btn" onclick="showSection('schedule', this)">الجدولة</button>
+        <button class="nav-btn" onclick="showSection('youtube', this)">يوتيوب</button>
+        <button class="nav-btn" onclick="showSection('import', this)">استيراد</button>
+        <button class="nav-btn" onclick="showSection('mg-ranner', this)">استيراد MG Ranner</button>
+        <button class="nav-btn" onclick="showSection('logs', this)">السجل</button>
+    </div>
+
+    <!-- Channels Section -->
+    <div id="sec-channels" class="admin-section active"></div>
+
+    <!-- Platforms Section -->
+    <div id="sec-platforms" class="admin-section"></div>
+
+    <!-- Employees Section -->
+    <div id="sec-employees" class="admin-section"></div>
+
+    <!-- Schedule Section -->
+    <div id="sec-schedule" class="admin-section"></div>
+
+    <!-- YouTube Section -->
+    <div id="sec-youtube" class="admin-section"></div>
+
+    <!-- Import Section -->
+    <div id="sec-import" class="admin-section"></div>
+
+    <!-- MG Ranner Import Section -->
+    <div id="sec-mg-ranner" class="admin-section"></div>
+
+    <!-- Logs Section -->
+    <div id="sec-logs" class="admin-section"></div>
+</div>
+
+<!-- Form Modal Container -->
+<div id="form-modal" class="form-modal hidden" onclick="if(event.target===this)closeForm()"></div>
+
+<script src="/static/admin.js"></script>
+</body>
+</html>
