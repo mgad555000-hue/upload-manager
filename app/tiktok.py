@@ -87,9 +87,11 @@ async def _run_upload(
 
     try:
         async with async_playwright() as p:
+            # Use headless in Docker (no display), headed locally
+            is_docker = os.path.exists("/.dockerenv")
             browser = await p.chromium.launch(
-                headless=False,
-                args=["--start-maximized"],
+                headless=is_docker,
+                args=["--start-maximized"] if not is_docker else ["--no-sandbox", "--disable-gpu"],
             )
 
             context = await browser.new_context(

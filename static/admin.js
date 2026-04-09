@@ -10,9 +10,19 @@ let scheduleRules = [];
 
 // ===== API Helper =====
 async function api(method, path, body) {
-    const opts = { method, headers: { 'Content-Type': 'application/json; charset=utf-8' } };
+    const headers = { 'Content-Type': 'application/json; charset=utf-8' };
+    if (currentUser && currentUser.token) {
+        headers['Authorization'] = 'Bearer ' + currentUser.token;
+    }
+    const opts = { method, headers };
     if (body) opts.body = JSON.stringify(body);
     const res = await fetch(API + path, opts);
+    if (res.status === 401) {
+        localStorage.removeItem('admin_user');
+        currentUser = null;
+        logout();
+        throw new Error('الجلسة انتهت — سجل دخول من جديد');
+    }
     if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'خطأ في السيرفر');

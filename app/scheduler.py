@@ -4,16 +4,16 @@
 All schedule times stored as Cairo local time (Africa/Cairo)
 """
 import json
-from datetime import datetime, timedelta, time, timezone
+from datetime import datetime, timedelta, time
+from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 from app.database import ScheduleRule, PlatformData, Platform
 
-# Cairo timezone offset (UTC+2) — simple fixed offset, no DST handling needed for Egypt
-CAIRO_OFFSET = timezone(timedelta(hours=2))
+CAIRO_TZ = ZoneInfo("Africa/Cairo")
 
 def _now_cairo() -> datetime:
     """Current time in Cairo, returned as naive datetime"""
-    return datetime.now(CAIRO_OFFSET).replace(tzinfo=None)
+    return datetime.now(CAIRO_TZ).replace(tzinfo=None)
 
 
 def calculate_next_slot(db: Session, channel_id: int, platform_id: int, content_type: str = "shorts", start_from: datetime | None = None) -> datetime | None:

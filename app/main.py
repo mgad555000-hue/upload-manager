@@ -6,7 +6,7 @@ import sys
 if sys.stdout:
     sys.stdout.reconfigure(encoding='utf-8')
 
-from fastapi import FastAPI, Depends, HTTPException, Query, File, UploadFile, Form
+from fastapi import FastAPI, Depends, HTTPException, Query, File, UploadFile, Form, Header
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,8 +40,59 @@ from app.models import (
     WordImportResponse, TikTokUploadRequest, TikTokUploadResponse,
 )
 
+import hashlib
+import secrets
+
 STATIC_DIR = os.getenv("STATIC_DIR", "./static")
 Path(STATIC_DIR).mkdir(parents=True, exist_ok=True)
+
+# ========== Auth Helpers ==========
+
+def _hash_pin(pin: str) -> str:
+    """Hash PIN with SHA-256 + salt stored in the hash itself"""
+    salt = secrets.token_hex(8)
+    h = hashlib.sha256(f"{salt}:{pin}".encode()).hexdigest()
+    return f"{salt}:{h}"
+
+def _verify_pin(pin: str, stored: str) -> bool:
+    """Verify PIN against stored hash. Also accepts plain text for migration."""
+    if ":" in stored and len(stored) > 20:
+        # Hashed format: salt:hash
+        salt, h = stored.split(":", 1)
+        return hashlib.sha256(f"{salt}:{pin}".encode()).hexdigest() == h
+    else:
+        # Plain text (legacy) — matches for migration
+        return pin == stored
+
+def _generate_token(employee_id: int) -> str:
+    """Generate a secure random token"""
+    return f"{employee_id}:{secrets.token_hex(16)}"
+
+# In-memory token store (cleared on restart — employees must re-login)
+_active_tokens: dict[str, int] = {}  # token -> employee_id
+
+def _validate_token(token: str) -> int | None:
+    """Returns employee_id if token is valid, else None"""
+    return _active_tokens.get(token)
+
+def require_auth(authorization: str = Header(None), db: Session = Depends(get_db)) -> Employee:
+    """Dependency: require valid token, return Employee object"""
+    if not authorization:
+        raise HTTPException(401, "مطلوب تسجيل دخول")
+    token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
+    emp_id = _validate_token(token)
+    if emp_id is None:
+        raise HTTPException(401, "التوكن غير صالح — سجل دخول من جديد")
+    emp = db.query(Employee).filter(Employee.id == emp_id, Employee.is_active == True).first()
+    if not emp:
+        raise HTTPException(401, "الموظف متعطل أو محذوف")
+    return emp
+
+def require_admin(emp: Employee = Depends(require_auth)) -> Employee:
+    """Dependency: require admin role"""
+    if emp.role != "admin":
+        raise HTTPException(403, "مطلوب صلاحية أدمن")
+    return emp
 
 
 async def lock_cleanup_task():
@@ -140,11 +191,22 @@ async def admin_page():
 
 @app.post("/api/auth/login", response_model=LoginResponse)
 def login(req: LoginRequest, db: Session = Depends(get_db)):
-    emp = db.query(Employee).filter(Employee.pin == req.pin, Employee.is_active == True).first()
+    # Try all active employees — support both hashed and plain PINs
+    employees = db.query(Employee).filter(Employee.is_active == True).all()
+    emp = None
+    for e in employees:
+        if _verify_pin(req.pin, e.pin):
+            emp = e
+            break
     if not emp:
         raise HTTPException(status_code=401, detail="PIN غير صحيح")
-    # Token بسيط = employee_id (في المرحلة 1 هنعمل JWT لو لزم)
-    return LoginResponse(employee_id=emp.id, name=emp.name, role=emp.role, token=str(emp.id))
+    # Migrate plain PIN to hashed on successful login
+    if ":" not in emp.pin or len(emp.pin) <= 20:
+        emp.pin = _hash_pin(req.pin)
+        db.commit()
+    token = _generate_token(emp.id)
+    _active_tokens[token] = emp.id
+    return LoginResponse(employee_id=emp.id, name=emp.name, role=emp.role, token=token)
 
 
 # ========== Channels ==========
@@ -157,7 +219,7 @@ def list_channels(include_inactive: bool = False, db: Session = Depends(get_db))
     return q.all()
 
 @app.post("/api/channels", response_model=ChannelResponse)
-def create_channel(ch: ChannelCreate, db: Session = Depends(get_db)):
+def create_channel(ch: ChannelCreate, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
     obj = Channel(**ch.model_dump())
     db.add(obj)
     try:
@@ -176,7 +238,7 @@ def get_channel(channel_id: int, db: Session = Depends(get_db)):
     return ch
 
 @app.put("/api/channels/{channel_id}", response_model=ChannelResponse)
-def update_channel(channel_id: int, data: ChannelUpdate, db: Session = Depends(get_db)):
+def update_channel(channel_id: int, data: ChannelUpdate, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
     ch = db.query(Channel).filter(Channel.id == channel_id).first()
     if not ch:
         raise HTTPException(404, "القناة مش موجودة")
@@ -398,7 +460,7 @@ def update_topic(topic_id: int, data: TopicUpdate, db: Session = Depends(get_db)
     return resp
 
 @app.delete("/api/topics/{topic_id}")
-def delete_topic(topic_id: int, db: Session = Depends(get_db)):
+def delete_topic(topic_id: int, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
     t = db.query(Topic).filter(Topic.id == topic_id).first()
     if not t:
         raise HTTPException(404, "الموضوع مش موجود")
@@ -733,8 +795,11 @@ def get_employee(emp_id: int, db: Session = Depends(get_db)):
     return emp
 
 @app.post("/api/employees", response_model=EmployeeResponse)
-def create_employee(data: EmployeeCreate, db: Session = Depends(get_db)):
-    obj = Employee(**data.model_dump())
+def create_employee(data: EmployeeCreate, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
+    # Hash the PIN before storing
+    data_dict = data.model_dump()
+    data_dict["pin"] = _hash_pin(data_dict["pin"])
+    obj = Employee(**data_dict)
     db.add(obj)
     try:
         db.commit()
@@ -745,7 +810,7 @@ def create_employee(data: EmployeeCreate, db: Session = Depends(get_db)):
     return obj
 
 @app.put("/api/employees/{emp_id}", response_model=EmployeeResponse)
-def update_employee(emp_id: int, data: EmployeeUpdate, db: Session = Depends(get_db)):
+def update_employee(emp_id: int, data: EmployeeUpdate, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
     emp = db.query(Employee).filter(Employee.id == emp_id).first()
     if not emp:
         raise HTTPException(404, "الموظف مش موجود")
@@ -758,6 +823,8 @@ def update_employee(emp_id: int, data: EmployeeUpdate, db: Session = Depends(get
             if admin_count == 0:
                 raise HTTPException(400, "مينفعش — ده آخر أدمن في النظام")
     for k, v in updates.items():
+        if k == "pin" and v:
+            v = _hash_pin(v)
         setattr(emp, k, v)
     db.commit()
     db.refresh(emp)
@@ -780,7 +847,7 @@ def list_schedule_rules(
     return q.all()
 
 @app.post("/api/schedule", response_model=ScheduleRuleResponse)
-def create_schedule_rule(data: ScheduleRuleCreate, db: Session = Depends(get_db)):
+def create_schedule_rule(data: ScheduleRuleCreate, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
     ch = db.query(Channel).filter(Channel.id == data.channel_id).first()
     if not ch:
         raise HTTPException(404, "القناة مش موجودة")
@@ -798,7 +865,7 @@ def create_schedule_rule(data: ScheduleRuleCreate, db: Session = Depends(get_db)
     return obj
 
 @app.put("/api/schedule/{rule_id}", response_model=ScheduleRuleResponse)
-def update_schedule_rule(rule_id: int, data: ScheduleRuleUpdate, db: Session = Depends(get_db)):
+def update_schedule_rule(rule_id: int, data: ScheduleRuleUpdate, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
     r = db.query(ScheduleRule).filter(ScheduleRule.id == rule_id).first()
     if not r:
         raise HTTPException(404, "القاعدة مش موجودة")
@@ -809,7 +876,7 @@ def update_schedule_rule(rule_id: int, data: ScheduleRuleUpdate, db: Session = D
     return r
 
 @app.delete("/api/schedule/{rule_id}")
-def delete_schedule_rule(rule_id: int, db: Session = Depends(get_db)):
+def delete_schedule_rule(rule_id: int, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
     r = db.query(ScheduleRule).filter(ScheduleRule.id == rule_id).first()
     if not r:
         raise HTTPException(404, "القاعدة مش موجودة")

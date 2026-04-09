@@ -11,6 +11,8 @@ from datetime import datetime
 import os
 import sys
 import json
+import hashlib
+import secrets
 
 # مسار قاعدة البيانات
 if sys.platform == "win32":
@@ -262,8 +264,10 @@ def _seed_data():
         ]
         db.add_all(fields)
 
-        # Admin employee
-        admin = Employee(name="Admin", pin="0000", role="admin")
+        # Admin employee (hashed PIN)
+        _salt = secrets.token_hex(8)
+        _hashed = hashlib.sha256(f"{_salt}:0000".encode()).hexdigest()
+        admin = Employee(name="Admin", pin=f"{_salt}:{_hashed}", role="admin")
         db.add(admin)
 
         # قواعد الجدول الافتراضية (8 مواعيد يومية لكل قناة/منصة)
