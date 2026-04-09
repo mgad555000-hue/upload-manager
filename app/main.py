@@ -52,13 +52,14 @@ async def lock_cleanup_task():
         db = None
         try:
             db = SessionLocal()
-            cutoff = datetime.utcnow() - timedelta(minutes=30)
+            cutoff = datetime.utcnow() - timedelta(minutes=10)
             # Atomic UPDATE to avoid race with confirm_upload
             from sqlalchemy import update, or_
+            # Only release "locked" — NOT "uploading" (upload in progress, don't interrupt)
             stmt = (
                 update(PlatformData)
                 .where(
-                    PlatformData.upload_status.in_(["locked", "uploading"]),
+                    PlatformData.upload_status == "locked",
                     or_(
                         PlatformData.lock_time == None,  # stuck locks without timestamp
                         PlatformData.lock_time < cutoff,
@@ -709,6 +710,13 @@ def log_copy(topic_id: int, platform_id: int, req: CopyLogRequest, db: Session =
 @app.get("/api/employees", response_model=List[EmployeeResponse])
 def list_employees(db: Session = Depends(get_db)):
     return db.query(Employee).all()
+
+@app.get("/api/employees/{emp_id}", response_model=EmployeeResponse)
+def get_employee(emp_id: int, db: Session = Depends(get_db)):
+    emp = db.query(Employee).filter(Employee.id == emp_id).first()
+    if not emp:
+        raise HTTPException(404, "الموظف مش موجود")
+    return emp
 
 @app.post("/api/employees", response_model=EmployeeResponse)
 def create_employee(data: EmployeeCreate, db: Session = Depends(get_db)):

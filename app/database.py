@@ -133,7 +133,7 @@ class Employee(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
-    pin = Column(String, nullable=False)
+    pin = Column(String, nullable=False, unique=True)
     role = Column(String, default="uploader")  # uploader / admin
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -197,6 +197,10 @@ class ScheduleRule(Base):
     timezone = Column(String, default="Africa/Cairo")
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("channel_id", "platform_id", "content_type", name="uq_schedule_rule"),
+    )
 
     channel = relationship("Channel", back_populates="schedule_rules")
     platform = relationship("Platform", back_populates="schedule_rules")

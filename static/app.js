@@ -117,7 +117,7 @@ async function showDashboard() {
     try {
         [statsData, topicsData, platformsData, channelsData] = await Promise.all([
             api('GET', '/api/dashboard/stats'),
-            api('GET', '/api/topics?limit=50'),
+            api('GET', '/api/topics?limit=200&status=pending'),
             api('GET', '/api/platforms'),
             api('GET', '/api/channels'),
         ]);
@@ -567,17 +567,25 @@ function escapeHtml(s) {
 }
 
 // ===== Init =====
-(function init() {
+(async function init() {
     const saved = localStorage.getItem('user');
     if (saved) {
         try {
             const parsed = JSON.parse(saved);
             if (parsed && parsed.employee_id && parsed.name) {
-                currentUser = parsed;
-                showDashboard();
-                return;
+                // Re-validate employee is still active
+                try {
+                    const emp = await api('GET', `/api/employees/${parsed.employee_id}`);
+                    if (emp && emp.is_active) {
+                        currentUser = parsed;
+                        showDashboard();
+                        return;
+                    }
+                } catch (e) { /* employee deleted or server down */ }
+                localStorage.removeItem('user');
+            } else {
+                localStorage.removeItem('user');
             }
-            localStorage.removeItem('user');
         } catch (e) {
             localStorage.removeItem('user');
         }

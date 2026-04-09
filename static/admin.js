@@ -861,6 +861,9 @@ const MG_FIELD_LABELS = {
     fb_desc: 'وصف فيسبوك',
     fb_thumb: 'صورة مصغرة فيسبوك',
     fb_keywords: 'كلمات مفتاحية فيسبوك',
+    up_desc: 'وصف أبسكرولد',
+    up_hashtags: 'هاشتاجات أبسكرولد',
+    up_screen: 'جملة شاشة أبسكرولد',
     tr_en_title: 'عنوان إنجليزي',
     tr_en_desc: 'وصف إنجليزي',
     tr_fr_title: 'عنوان فرنسي',
@@ -887,6 +890,11 @@ const MG_DEFAULT_MAP = {
     facebook: {
         title: 'fb_title',
         description: 'fb_desc',
+    },
+    upscrolled: {
+        description: 'up_desc',
+        hashtags: 'up_hashtags',
+        screen_text: 'up_screen',
     },
 };
 
@@ -1030,6 +1038,15 @@ function renderMGCards(topics, channelId, contentType) {
             fields: [
                 { field: 'title', label: 'العنوان' },
                 { field: 'description', label: 'الوصف' },
+            ],
+        },
+        {
+            name: 'upscrolled',
+            label: 'أبسكرولد',
+            fields: [
+                { field: 'description', label: 'الوصف' },
+                { field: 'hashtags', label: 'الهاشتاجات' },
+                { field: 'screen_text', label: 'جملة الشاشة' },
             ],
         },
     ];

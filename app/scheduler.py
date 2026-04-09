@@ -1,21 +1,27 @@
 """
 حساب التوقيت التلقائي — Upload Manager
 يحسب أول slot فاضي من schedule_rules لكل قناة/منصة
+All schedule times stored as Cairo local time (Africa/Cairo)
 """
 import json
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, timezone
 from sqlalchemy.orm import Session
 from app.database import ScheduleRule, PlatformData, Platform
+
+# Cairo timezone offset (UTC+2) — simple fixed offset, no DST handling needed for Egypt
+CAIRO_OFFSET = timezone(timedelta(hours=2))
+
+def _now_cairo() -> datetime:
+    """Current time in Cairo, returned as naive datetime"""
+    return datetime.now(CAIRO_OFFSET).replace(tzinfo=None)
 
 
 def calculate_next_slot(db: Session, channel_id: int, platform_id: int, content_type: str = "shorts", start_from: datetime | None = None) -> datetime | None:
     """
     يحسب أول موعد نشر فاضي لقناة ومنصة معينة.
     1. يجيب قواعد الجدول (publish_times)
-    2. يجيب آخر موعد محجوز
-    3. يرجع أول slot فاضي بعده
-
-    start_from: تاريخ بداية مخصص — لو None يبدأ من الوقت الحالي أو بعد آخر محجوز
+    2. يجيب كل المواعيد المحجوزة (pre-fetch)
+    3. يرجع أول slot فاضي
     """
     rule = db.query(ScheduleRule).filter(
         ScheduleRule.channel_id == channel_id,
@@ -44,7 +50,7 @@ def calculate_next_slot(db: Session, channel_id: int, platform_id: int, content_
             parts = t.split(":")
             time_slots.append(time(int(parts[0]), int(parts[1])))
         except (IndexError, ValueError, TypeError):
-            continue  # Skip malformed time entries
+            continue
     if not time_slots:
         return None
     time_slots.sort()
@@ -58,11 +64,10 @@ def calculate_next_slot(db: Session, channel_id: int, platform_id: int, content_
         PlatformData.topic.has(channel_id=channel_id),
     ).order_by(PlatformData.scheduled_time.desc()).first()
 
-    # Start searching from: custom start_from > last booked > now
-    now = datetime.utcnow()
+    # Start searching from: custom start_from > last booked > now (Cairo time)
+    now = _now_cairo()
     if start_from:
         search_from = start_from
-        # لو فيه محجوز بعد start_from، ابدأ بعده
         if last_booked and last_booked[0] and last_booked[0] >= start_from:
             search_from = last_booked[0] + timedelta(minutes=1)
     elif last_booked and last_booked[0]:
@@ -70,23 +75,28 @@ def calculate_next_slot(db: Session, channel_id: int, platform_id: int, content_
     else:
         search_from = now
 
-    # Search up to 30 days ahead
+    # Pre-fetch ALL booked slots for this channel+platform (30 days ahead)
     current_date = search_from.date()
+    end_date = current_date + timedelta(days=30)
+    booked_rows = db.query(PlatformData.scheduled_time).join(
+        PlatformData.topic
+    ).filter(
+        PlatformData.platform_id == platform_id,
+        PlatformData.scheduled_time != None,
+        PlatformData.scheduled_time >= datetime.combine(current_date, time(0, 0)),
+        PlatformData.scheduled_time <= datetime.combine(end_date, time(23, 59)),
+        PlatformData.topic.has(channel_id=channel_id),
+    ).all()
+    booked_set = {row[0] for row in booked_rows}
+
+    # Search for first free slot
     for day_offset in range(30):
         check_date = current_date + timedelta(days=day_offset)
         for slot_time in time_slots:
             candidate = datetime.combine(check_date, slot_time)
             if candidate <= search_from:
                 continue
-            # Check if this slot is already taken
-            existing = db.query(PlatformData).join(
-                PlatformData.topic
-            ).filter(
-                PlatformData.platform_id == platform_id,
-                PlatformData.scheduled_time == candidate,
-                PlatformData.topic.has(channel_id=channel_id),
-            ).first()
-            if not existing:
+            if candidate not in booked_set:
                 return candidate
 
     return None
@@ -96,8 +106,6 @@ def auto_schedule_topic(db: Session, topic_id: int, channel_id: int, content_typ
     """
     يحسب ويحط التوقيت لكل منصة لموضوع جديد.
     يُستدعى بعد إنشاء الموضوع.
-
-    start_from: تاريخ بداية مخصص للجدولة — لو None يبدأ من الوقت الحالي
     """
     platform_data_list = db.query(PlatformData).filter(
         PlatformData.topic_id == topic_id,
