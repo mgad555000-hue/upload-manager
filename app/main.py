@@ -52,25 +52,40 @@ async def lock_cleanup_task():
         db = None
         try:
             db = SessionLocal()
-            cutoff = datetime.utcnow() - timedelta(minutes=10)
-            # Atomic UPDATE to avoid race with confirm_upload
+            lock_cutoff = datetime.utcnow() - timedelta(minutes=10)
+            upload_cutoff = datetime.utcnow() - timedelta(minutes=60)  # uploads stuck >1hr
             from sqlalchemy import update, or_
-            # Only release "locked" — NOT "uploading" (upload in progress, don't interrupt)
-            stmt = (
+            # Release expired locks
+            stmt_locked = (
                 update(PlatformData)
                 .where(
                     PlatformData.upload_status == "locked",
                     or_(
-                        PlatformData.lock_time == None,  # stuck locks without timestamp
-                        PlatformData.lock_time < cutoff,
+                        PlatformData.lock_time == None,
+                        PlatformData.lock_time < lock_cutoff,
                     ),
                 )
                 .values(upload_status="pending", lock_holder=None, lock_time=None)
             )
-            result = db.execute(stmt)
-            if result.rowcount > 0:
+            r1 = db.execute(stmt_locked)
+            # Recovery: release uploads stuck >60 min (server crashed mid-upload)
+            stmt_stuck = (
+                update(PlatformData)
+                .where(
+                    PlatformData.upload_status == "uploading",
+                    or_(
+                        PlatformData.lock_time == None,
+                        PlatformData.lock_time < upload_cutoff,
+                    ),
+                )
+                .values(upload_status="pending", lock_holder=None, lock_time=None)
+            )
+            r2 = db.execute(stmt_stuck)
+            total = r1.rowcount + r2.rowcount
+            if total > 0:
                 db.commit()
-                print(f"[Lock Cleanup] Released {result.rowcount} expired locks")
+                if r1.rowcount: print(f"[Lock Cleanup] Released {r1.rowcount} expired locks")
+                if r2.rowcount: print(f"[Lock Cleanup] Recovered {r2.rowcount} stuck uploads")
         except Exception as e:
             if db:
                 db.rollback()
@@ -420,8 +435,7 @@ def update_platform_data(topic_id: int, platform_id: int, data: PlatformDataInpu
         raise HTTPException(400, "المنصة دي اترفعت بالفعل — مينفعش تتعدل")
     if pd.upload_status == "uploading":
         raise HTTPException(400, "الفيديو بيترفع حالياً — مينفعش تتعدل")
-    if pd.upload_status == "locked" and pd.lock_holder is not None:
-        raise HTTPException(400, "المنصة مقفولة — لازم تتفك الأول")
+    # locked status doesn't block editing — only uploading is blocked
     pd.field_values = json.dumps(data.field_values, ensure_ascii=False)
     if data.scheduled_time is not None:
         pd.scheduled_time = data.scheduled_time
@@ -479,7 +493,7 @@ def lock_topic(topic_id: int, platform_id: int, req: UploadConfirm, db: Session 
     from datetime import timedelta
     from sqlalchemy import update, or_, and_
     now = datetime.utcnow()
-    cutoff = now - timedelta(minutes=30)
+    cutoff = now - timedelta(minutes=10)  # Match lock_cleanup_task timeout
     old_holder = pd.lock_holder  # Save for auto_unlock log
     stmt = (
         update(PlatformData)
@@ -1389,17 +1403,19 @@ async def import_word(
             except ValueError:
                 pass
 
+        from app.database import SessionLocal
         for t_data in topics_data:
+            topic_db = SessionLocal()
             try:
                 topic_create = TopicCreate(**t_data)
-                create_topic(topic_create, db, schedule_start_from=start_dt)
+                create_topic(topic_create, topic_db, schedule_start_from=start_dt)
                 created += 1
             except HTTPException as e:
                 create_errors.append(f"موضوع #{t_data.get('topic_number', '?')}: {e.detail}")
-                db.rollback()
             except Exception:
                 create_errors.append(f"موضوع #{t_data.get('topic_number', '?')}: خطأ غير متوقع")
-                db.rollback()
+            finally:
+                topic_db.close()
 
         return WordImportResponse(
             created=created,

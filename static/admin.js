@@ -87,17 +87,25 @@ function logout() {
 }
 
 // ===== Init =====
-(function init() {
+(async function init() {
     const saved = localStorage.getItem('admin_user');
     if (saved) {
         try {
             const parsed = JSON.parse(saved);
             if (parsed && parsed.employee_id && parsed.role === 'admin') {
-                currentUser = parsed;
-                showAdmin();
-                return;
+                // Re-validate employee is still active and admin
+                try {
+                    const emp = await api('GET', `/api/employees/${parsed.employee_id}`);
+                    if (emp && emp.is_active && emp.role === 'admin') {
+                        currentUser = parsed;
+                        showAdmin();
+                        return;
+                    }
+                } catch (e) { /* employee deleted or server down */ }
+                localStorage.removeItem('admin_user');
+            } else {
+                localStorage.removeItem('admin_user');
             }
-            localStorage.removeItem('admin_user');
         } catch (e) { localStorage.removeItem('admin_user'); }
     }
 })();
@@ -1130,6 +1138,7 @@ async function submitMGTopics() {
         { name: 'youtube', fields: ['title', 'description', 'tags', 'thumbnail_text'] },
         { name: 'tiktok', fields: ['description', 'hashtags', 'screen_text'] },
         { name: 'facebook', fields: ['title', 'description'] },
+        { name: 'upscrolled', fields: ['description', 'hashtags', 'screen_text'] },
     ];
 
     const topicsToSend = [];
