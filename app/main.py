@@ -333,7 +333,7 @@ def list_topics(
     return result
 
 @app.post("/api/topics", response_model=TopicResponse)
-def create_topic(data: TopicCreate, db: Session = Depends(get_db), schedule_start_from: datetime | None = None):
+def create_topic(data: TopicCreate, db: Session = Depends(get_db), schedule_start_from: datetime | None = None, target_platform_ids: list | None = None):
     # Check channel exists
     ch = db.query(Channel).filter(Channel.id == data.channel_id).first()
     if not ch:
@@ -376,8 +376,11 @@ def create_topic(data: TopicCreate, db: Session = Depends(get_db), schedule_star
             )
             db.add(obj)
     else:
-        # Auto-create for all active platforms
-        platforms = db.query(Platform).filter(Platform.is_active == True).all()
+        # Auto-create for selected platforms (or all active if not specified)
+        if target_platform_ids:
+            platforms = db.query(Platform).filter(Platform.id.in_(target_platform_ids), Platform.is_active == True).all()
+        else:
+            platforms = db.query(Platform).filter(Platform.is_active == True).all()
         for pl in platforms:
             db.add(PlatformData(
                 topic_id=topic.id,
@@ -1449,6 +1452,7 @@ async def import_word(
     file: UploadFile = File(...),
     channel_id: int = Form(...),
     content_type: str = Form("shorts"),
+    platform_ids: str = Form(""),
     schedule_start_from: str = Form(None),
     db: Session = Depends(get_db),
 ):
@@ -1512,12 +1516,20 @@ async def import_word(
             except ValueError:
                 pass
 
+        # Parse platform_ids filter
+        selected_platform_ids = None
+        if platform_ids and platform_ids.strip():
+            try:
+                selected_platform_ids = [int(x.strip()) for x in platform_ids.split(",") if x.strip()]
+            except ValueError:
+                raise HTTPException(400, "platform_ids لازم يكون أرقام مفصولة بفاصلة")
+
         from app.database import SessionLocal
         for t_data in topics_data:
             topic_db = SessionLocal()
             try:
                 topic_create = TopicCreate(**t_data)
-                create_topic(topic_create, topic_db, schedule_start_from=start_dt)
+                create_topic(topic_create, topic_db, schedule_start_from=start_dt, target_platform_ids=selected_platform_ids)
                 created += 1
             except HTTPException as e:
                 create_errors.append(f"موضوع #{t_data.get('topic_number', '?')}: {e.detail}")

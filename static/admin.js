@@ -956,6 +956,18 @@ function renderImport() {
                 </select>
             </div>
             <div class="form-group">
+                <label>المنصات المطلوبة</label>
+                <div id="import-platforms" style="display:flex;flex-wrap:wrap;gap:8px">
+                    ${platforms.map(p => `
+                        <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;background:var(--surface2);padding:6px 12px;border-radius:6px">
+                            <input type="checkbox" class="import-platform-cb" value="${p.id}" checked>
+                            ${esc(p.display_name || p.name)}
+                        </label>
+                    `).join('')}
+                </div>
+                <div style="font-size:11px;color:var(--text2);margin-top:4px">اختار المنصات اللي عايز تستورد عليها — شيل العلامة من أي منصة مش عايزها</div>
+            </div>
+            <div class="form-group">
                 <label>ملف Word (.docx)</label>
                 <input type="file" id="import-file" accept=".docx">
             </div>
@@ -992,10 +1004,18 @@ async function doImport() {
     }
 
     const scheduleStart = document.getElementById('import-schedule-start').value || '';
+    const selectedPlatforms = [...document.querySelectorAll('.import-platform-cb:checked')].map(cb => cb.value);
+    if (selectedPlatforms.length === 0) {
+        toast('اختار منصة واحدة على الأقل', 'error');
+        btn.disabled = false;
+        btn.textContent = 'استيراد';
+        return;
+    }
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
     formData.append('channel_id', channelId);
     formData.append('content_type', contentType);
+    formData.append('platform_ids', selectedPlatforms.join(','));
     if (scheduleStart) formData.append('schedule_start_from', scheduleStart);
 
     try {
