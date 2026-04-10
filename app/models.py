@@ -282,6 +282,12 @@ class ScheduleRuleResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class RescheduleRequest(BaseModel):
+    topic_id: int
+    platform_id: int
+    new_time: datetime
+    cascade: bool = False
+
 
 # ========== Upload Log ==========
 

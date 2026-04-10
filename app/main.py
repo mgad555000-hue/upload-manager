@@ -34,7 +34,7 @@ from app.models import (
     TopicCreate, TopicUpdate, TopicResponse, TopicBatchCreate, PlatformDataInput, PlatformDataResponse,
     EmployeeCreate, EmployeeUpdate, EmployeeResponse, LoginRequest, LoginResponse,
     UploadConfirm, CopyLogRequest, UploadLogResponse,
-    ScheduleRuleCreate, ScheduleRuleUpdate, ScheduleRuleResponse,
+    ScheduleRuleCreate, ScheduleRuleUpdate, ScheduleRuleResponse, RescheduleRequest,
     DashboardStats,
     YouTubeAuthStatus, YouTubeUploadRequest, YouTubeUploadResponse, QuotaStatusResponse,
     WordImportResponse, TikTokUploadRequest, TikTokUploadResponse,
@@ -508,7 +508,7 @@ def update_platform_data(topic_id: int, platform_id: int, data: PlatformDataInpu
 
 
 @app.patch("/api/topics/{topic_id}/platforms/{platform_id}/schedule")
-def update_schedule_time(topic_id: int, platform_id: int, body: dict, db: Session = Depends(get_db)):
+def update_schedule_time(topic_id: int, platform_id: int, body: dict, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
     """تعديل موعد النشر لمنصة معينة"""
     pd_rec = db.query(PlatformData).filter(
         PlatformData.topic_id == topic_id,
@@ -883,6 +883,48 @@ def delete_schedule_rule(rule_id: int, db: Session = Depends(get_db), _admin: Em
     db.delete(r)
     db.commit()
     return {"ok": True}
+
+
+@app.post("/api/schedule/reschedule")
+def reschedule_videos(data: RescheduleRequest, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
+    """
+    تغيير موعد فيديو (فردي أو متتالي).
+    cascade=true: يغيّر كل الفيديوهات اللي بعده بناءً على الجدولة
+    """
+    from app.scheduler import reschedule_from
+    changed = reschedule_from(db, data.topic_id, data.platform_id, data.new_time, data.cascade)
+    if changed == 0:
+        raise HTTPException(404, "الفيديو مش موجود أو اترفع بالفعل")
+    return {"ok": True, "changed": changed}
+
+
+@app.get("/api/schedule/videos")
+def list_scheduled_videos(
+    channel_id: int,
+    platform_id: int,
+    content_type: str = "shorts",
+    db: Session = Depends(get_db),
+):
+    """قائمة الفيديوهات المجدولة لقناة ومنصة معينة (مرتبة بالموعد)"""
+    rows = db.query(PlatformData, Topic).join(
+        PlatformData.topic
+    ).filter(
+        PlatformData.platform_id == platform_id,
+        Topic.channel_id == channel_id,
+        Topic.content_type == content_type,
+    ).order_by(Topic.topic_number.asc()).all()
+
+    result = []
+    for pd, topic in rows:
+        result.append({
+            "topic_id": topic.id,
+            "topic_number": topic.topic_number,
+            "title": topic.title,
+            "platform_id": pd.platform_id,
+            "scheduled_time": pd.scheduled_time.isoformat() if pd.scheduled_time else None,
+            "upload_status": pd.upload_status,
+        })
+    return result
 
 
 # ========== Upload Log ==========

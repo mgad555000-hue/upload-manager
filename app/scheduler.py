@@ -75,9 +75,9 @@ def calculate_next_slot(db: Session, channel_id: int, platform_id: int, content_
     else:
         search_from = now
 
-    # Pre-fetch ALL booked slots for this channel+platform (30 days ahead)
+    # Pre-fetch ALL booked slots for this channel+platform (365 days ahead)
     current_date = search_from.date()
-    end_date = current_date + timedelta(days=30)
+    end_date = current_date + timedelta(days=365)
     booked_rows = db.query(PlatformData.scheduled_time).join(
         PlatformData.topic
     ).filter(
@@ -90,7 +90,7 @@ def calculate_next_slot(db: Session, channel_id: int, platform_id: int, content_
     booked_set = {row[0] for row in booked_rows}
 
     # Search for first free slot
-    for day_offset in range(30):
+    for day_offset in range(365):
         check_date = current_date + timedelta(days=day_offset)
         for slot_time in time_slots:
             candidate = datetime.combine(check_date, slot_time)
@@ -118,3 +118,111 @@ def auto_schedule_topic(db: Session, topic_id: int, channel_id: int, content_typ
             pd.scheduled_time = next_slot
 
     db.commit()
+
+
+def reschedule_from(db: Session, topic_id: int, platform_id: int, new_time: datetime, cascade: bool = False):
+    """
+    يغيّر موعد فيديو معين على منصة معينة.
+    لو cascade=True: يغيّر كل الفيديوهات اللي بعده على نفس القناة/المنصة
+    بناءً على قواعد الجدولة (ScheduleRule).
+    يرجع عدد الفيديوهات اللي اتغيرت.
+    """
+    from app.database import Topic
+
+    # Get the target platform_data
+    target_pd = db.query(PlatformData).filter(
+        PlatformData.topic_id == topic_id,
+        PlatformData.platform_id == platform_id,
+    ).first()
+    if not target_pd:
+        return 0
+
+    # Get the topic to find channel
+    topic = db.query(Topic).filter(Topic.id == topic_id).first()
+    if not topic:
+        return 0
+
+    # Don't reschedule uploaded videos
+    if target_pd.upload_status == "uploaded":
+        return 0
+
+    # Update target video
+    target_pd.scheduled_time = new_time
+    changed = 1
+
+    if cascade:
+        # Get schedule rule for this channel+platform
+        rule = db.query(ScheduleRule).filter(
+            ScheduleRule.channel_id == topic.channel_id,
+            ScheduleRule.platform_id == platform_id,
+            ScheduleRule.content_type == topic.content_type,
+            ScheduleRule.is_active == True,
+        ).first()
+
+        if rule:
+            try:
+                times = json.loads(rule.publish_times)
+            except (json.JSONDecodeError, TypeError):
+                times = []
+
+            time_slots = []
+            for t in times:
+                try:
+                    if not isinstance(t, str):
+                        continue
+                    parts = t.split(":")
+                    time_slots.append(time(int(parts[0]), int(parts[1])))
+                except (IndexError, ValueError, TypeError):
+                    continue
+            time_slots.sort()
+
+            if time_slots:
+                # Get all subsequent videos (same channel + platform, topic_number > current, not uploaded)
+                subsequent = db.query(PlatformData).join(
+                    PlatformData.topic
+                ).filter(
+                    PlatformData.platform_id == platform_id,
+                    PlatformData.upload_status != "uploaded",
+                    Topic.channel_id == topic.channel_id,
+                    Topic.content_type == topic.content_type,
+                    Topic.topic_number > topic.topic_number,
+                ).order_by(Topic.topic_number.asc()).all()
+
+                # Collect IDs of videos being rescheduled (target + subsequent)
+                rescheduled_ids = {target_pd.id} | {spd.id for spd in subsequent}
+
+                # Pre-fetch booked slots by OTHER videos (not being rescheduled)
+                # to avoid double-booking the same time slot
+                end_date = new_time.date() + timedelta(days=90)
+                booked_rows = db.query(PlatformData.scheduled_time).join(
+                    PlatformData.topic
+                ).filter(
+                    PlatformData.platform_id == platform_id,
+                    PlatformData.scheduled_time != None,
+                    PlatformData.id.notin_(rescheduled_ids),
+                    Topic.channel_id == topic.channel_id,
+                    PlatformData.scheduled_time >= new_time,
+                    PlatformData.scheduled_time <= datetime.combine(end_date, time(23, 59)),
+                ).all()
+                booked_set = {row[0] for row in booked_rows}
+
+                # Assign next available slots sequentially after new_time, skipping booked
+                last_assigned = new_time
+                for spd in subsequent:
+                    search_date = last_assigned.date()
+                    found = False
+                    for day_offset in range(90):
+                        check_date = search_date + timedelta(days=day_offset)
+                        for slot_time in time_slots:
+                            candidate = datetime.combine(check_date, slot_time)
+                            if candidate > last_assigned and candidate not in booked_set:
+                                spd.scheduled_time = candidate
+                                last_assigned = candidate
+                                changed += 1
+                                found = True
+                                break
+                        if found:
+                            break
+
+    db.commit()
+    return changed

@@ -309,19 +309,24 @@ function renderFields() {
     const schedTime = pd.scheduled_time ? new Date(pd.scheduled_time) : null;
     // Use local time for datetime-local input (not UTC)
     const schedIso = schedTime ? (schedTime.getFullYear() + '-' + String(schedTime.getMonth()+1).padStart(2,'0') + '-' + String(schedTime.getDate()).padStart(2,'0') + 'T' + String(schedTime.getHours()).padStart(2,'0') + ':' + String(schedTime.getMinutes()).padStart(2,'0')) : '';
+    const isAdmin = currentUser && currentUser.role === 'admin';
     schedSection.innerHTML = `
     <div class="schedule-card">
         <div class="time-label">موعد النشر</div>
         <div class="time-value" id="sched-display">${schedTime ? formatDate(pd.scheduled_time) : 'مش محدد'}</div>
-        <button class="copy-btn" onclick="toggleScheduleEdit()" style="margin-top:6px">تعديل الموعد</button>
+        ${isAdmin ? `<button class="copy-btn" onclick="toggleScheduleEdit()" style="margin-top:6px">تعديل الموعد</button>
         <div id="sched-edit" style="display:none;margin-top:8px">
             <input type="datetime-local" id="sched-input" value="${schedIso}" dir="ltr"
                 style="padding:8px 12px;font-size:14px;border:1px solid #ddd;border-radius:8px;width:100%">
+            <select id="sched-cascade" style="padding:8px 12px;font-size:13px;border:1px solid #ddd;border-radius:8px;width:100%;margin-top:6px">
+                <option value="false">هذا الفيديو فقط</option>
+                <option value="true">هذا الفيديو + كل اللي بعده (متتالي)</option>
+            </select>
             <div style="display:flex;gap:8px;margin-top:8px">
                 <button class="copy-btn" onclick="saveScheduleTime()" style="background:#4f46e5;color:#fff">حفظ</button>
                 <button class="copy-btn" onclick="clearScheduleTime()" style="background:#ef4444;color:#fff">إزالة الموعد</button>
             </div>
-        </div>
+        </div>` : ''}
     </div>`;
 
     // Fields
@@ -440,17 +445,37 @@ function toggleScheduleEdit() {
 async function saveScheduleTime() {
     const val = document.getElementById('sched-input').value;
     if (!val) { toast('اختار تاريخ ووقت', 'error'); return; }
-    try {
-        const res = await api('PATCH', `/api/topics/${currentTopic.id}/platforms/${currentPlatformId}/schedule`, {
-            scheduled_time: val + ':00',
-        });
-        // Update local data
-        const pd = (currentTopic.platform_data || []).find(p => p.platform_id === currentPlatformId);
-        if (pd) pd.scheduled_time = res.scheduled_time;
-        renderFields();
-        toast('تم تعديل الموعد', 'success');
-    } catch (e) {
-        toast(e.message || 'فشل التعديل', 'error');
+    const cascadeEl = document.getElementById('sched-cascade');
+    const cascade = cascadeEl ? cascadeEl.value === 'true' : false;
+
+    if (cascade) {
+        // Use the reschedule endpoint for cascade
+        try {
+            const res = await api('POST', '/api/schedule/reschedule', {
+                topic_id: currentTopic.id,
+                platform_id: currentPlatformId,
+                new_time: val + ':00',
+                cascade: true,
+            });
+            const pd = (currentTopic.platform_data || []).find(p => p.platform_id === currentPlatformId);
+            if (pd) pd.scheduled_time = val + ':00';
+            renderFields();
+            toast(`تم تعديل ${res.changed} فيديو`, 'success');
+        } catch (e) {
+            toast(e.message || 'فشل التعديل', 'error');
+        }
+    } else {
+        try {
+            const res = await api('PATCH', `/api/topics/${currentTopic.id}/platforms/${currentPlatformId}/schedule`, {
+                scheduled_time: val + ':00',
+            });
+            const pd = (currentTopic.platform_data || []).find(p => p.platform_id === currentPlatformId);
+            if (pd) pd.scheduled_time = res.scheduled_time;
+            renderFields();
+            toast('تم تعديل الموعد', 'success');
+        } catch (e) {
+            toast(e.message || 'فشل التعديل', 'error');
+        }
     }
 }
 

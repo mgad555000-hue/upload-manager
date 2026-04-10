@@ -168,6 +168,7 @@ function showSection(name, btn) {
     else if (name === 'youtube') renderYouTube();
     else if (name === 'import') renderImport();
     else if (name === 'mg-ranner') renderMGRanner();
+    else if (name === 'reschedule') renderReschedule();
     else if (name === 'logs') renderLogs();
 }
 
@@ -579,6 +580,185 @@ async function deleteScheduleRule(id) {
         renderSchedule();
     } catch (e) { toast(e.message, 'error'); }
 }
+
+// ===== RESCHEDULE (تعديل المواعيد) =====
+let rescheduleVideos = [];
+
+function renderReschedule() {
+    const container = document.getElementById('sec-reschedule');
+    container.innerHTML = `
+    <div style="margin-bottom:16px">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">
+            <div class="form-group" style="margin:0">
+                <label>القناة</label>
+                <select id="rs-channel" onchange="loadRescheduleVideos()">${_channelOptions()}</select>
+            </div>
+            <div class="form-group" style="margin:0">
+                <label>المنصة</label>
+                <select id="rs-platform" onchange="loadRescheduleVideos()">${_platformOptions()}</select>
+            </div>
+            <div class="form-group" style="margin:0">
+                <label>نوع المحتوى</label>
+                <select id="rs-content" onchange="loadRescheduleVideos()">
+                    <option value="shorts">Shorts</option>
+                    <option value="long">Long</option>
+                </select>
+            </div>
+        </div>
+    </div>
+    <div id="rs-videos-list"></div>`;
+    loadRescheduleVideos();
+}
+
+async function loadRescheduleVideos() {
+    const container = document.getElementById('rs-videos-list');
+    if (!container) return;
+    const chId = document.getElementById('rs-channel')?.value;
+    const plId = document.getElementById('rs-platform')?.value;
+    const ct = document.getElementById('rs-content')?.value || 'shorts';
+    if (!chId || !plId) return;
+
+    container.innerHTML = '<div class="loading">جاري التحميل...</div>';
+    try {
+        rescheduleVideos = await api('GET', `/api/schedule/videos?channel_id=${chId}&platform_id=${plId}&content_type=${ct}`);
+        renderRescheduleList();
+    } catch (e) {
+        container.innerHTML = '<div class="empty-state"><p>فشل التحميل</p></div>';
+    }
+}
+
+function renderRescheduleList() {
+    const container = document.getElementById('rs-videos-list');
+    if (!rescheduleVideos.length) {
+        container.innerHTML = '<div class="empty-state"><p>مفيش فيديوهات</p></div>';
+        return;
+    }
+
+    let html = `
+    <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center">
+        <button class="btn-add" onclick="rescheduleFirstVideo()">تغيير موعد أول فيديو (+ متتالي)</button>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+            <tr style="background:var(--surface2);text-align:right">
+                <th style="padding:8px">رقم</th>
+                <th style="padding:8px">العنوان</th>
+                <th style="padding:8px">الموعد</th>
+                <th style="padding:8px">الحالة</th>
+                <th style="padding:8px">إجراء</th>
+            </tr>
+        </thead>
+        <tbody>`;
+
+    for (const v of rescheduleVideos) {
+        const schedStr = v.scheduled_time ? formatDateTime(v.scheduled_time) : 'مش محدد';
+        const statusLabel = {'pending':'في الانتظار','locked':'مقفول','uploading':'جاري الرفع','uploaded':'تم الرفع'}[v.upload_status] || v.upload_status;
+        const statusClass = v.upload_status === 'uploaded' ? 'status-active' : '';
+        const disabled = v.upload_status === 'uploaded' ? 'disabled' : '';
+
+        html += `
+            <tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:8px">${esc(v.topic_number)}</td>
+                <td style="padding:8px">${esc(v.title || '—')}</td>
+                <td style="padding:8px" dir="ltr">${esc(schedStr)}</td>
+                <td style="padding:8px"><span class="status-badge ${statusClass}">${esc(statusLabel)}</span></td>
+                <td style="padding:8px">
+                    <button class="btn-sm btn-edit" ${disabled} onclick="editVideoSchedule(${v.topic_id}, ${v.platform_id}, '${v.scheduled_time || ''}', ${v.topic_number})">تعديل</button>
+                </td>
+            </tr>`;
+    }
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+function formatDateTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const day = d.getDate();
+    const month = d.getMonth() + 1;
+    const year = d.getFullYear();
+    const h = d.getHours().toString().padStart(2, '0');
+    const m = d.getMinutes().toString().padStart(2, '0');
+    return `${day}/${month}/${year} ${h}:${m}`;
+}
+
+function _toLocalIso(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + 'T' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+}
+
+function editVideoSchedule(topicId, platformId, currentTime, topicNum) {
+    const isoVal = _toLocalIso(currentTime);
+    openForm(`تعديل موعد فيديو #${topicNum}`, `
+        <div class="form-group">
+            <label>الموعد الجديد</label>
+            <input type="datetime-local" id="f-newtime" value="${isoVal}" dir="ltr" style="font-family:monospace">
+        </div>
+        <div class="form-group">
+            <label>نوع التغيير</label>
+            <select id="f-cascade">
+                <option value="false">هذا الفيديو فقط</option>
+                <option value="true">هذا الفيديو + كل اللي بعده (متتالي)</option>
+            </select>
+        </div>
+        <div style="font-size:12px;color:var(--text2);margin-top:8px">
+            <b>فردي:</b> يغيّر موعد الفيديو ده بس<br>
+            <b>متتالي:</b> يغيّر موعده ويعيد جدولة كل الفيديوهات اللي بعده حسب مواعيد الجدولة الثابتة
+        </div>
+    `, async () => {
+        const newTime = formVal('f-newtime');
+        if (!newTime) { toast('اختار موعد', 'error'); return; }
+        const cascade = formVal('f-cascade') === 'true';
+        try {
+            const res = await api('POST', '/api/schedule/reschedule', {
+                topic_id: topicId,
+                platform_id: platformId,
+                new_time: newTime + ':00',
+                cascade: cascade,
+            });
+            toast(`تم تعديل ${res.changed} فيديو`, 'success');
+            await loadRescheduleVideos();
+        } catch (e) {
+            toast(e.message || 'فشل التعديل', 'error');
+        }
+    });
+}
+
+function rescheduleFirstVideo() {
+    // Find first non-uploaded video
+    const first = rescheduleVideos.find(v => v.upload_status !== 'uploaded');
+    if (!first) { toast('كل الفيديوهات اترفعت', 'error'); return; }
+
+    const isoVal = _toLocalIso(first.scheduled_time);
+    openForm(`تغيير جدول كل الفيديوهات (من #${first.topic_number})`, `
+        <div class="form-group">
+            <label>موعد أول فيديو (#${first.topic_number})</label>
+            <input type="datetime-local" id="f-newtime" value="${isoVal}" dir="ltr" style="font-family:monospace">
+        </div>
+        <div style="font-size:12px;color:var(--text2);margin-top:8px;padding:10px;background:var(--surface2);border-radius:8px">
+            هيتغير موعد الفيديو ده + كل الفيديوهات اللي بعده تلقائياً<br>
+            حسب مواعيد الجدولة الثابتة (ScheduleRule) للمنصة دي
+        </div>
+    `, async () => {
+        const newTime = formVal('f-newtime');
+        if (!newTime) { toast('اختار موعد', 'error'); return; }
+        try {
+            const res = await api('POST', '/api/schedule/reschedule', {
+                topic_id: first.topic_id,
+                platform_id: first.platform_id,
+                new_time: newTime + ':00',
+                cascade: true,
+            });
+            toast(`تم تعديل ${res.changed} فيديو`, 'success');
+            await loadRescheduleVideos();
+        } catch (e) {
+            toast(e.message || 'فشل التعديل', 'error');
+        }
+    });
+}
+
 
 // ===== LOGS =====
 async function renderLogs() {
