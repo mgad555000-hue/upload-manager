@@ -26,7 +26,7 @@ from fastapi.responses import RedirectResponse
 from app.database import (
     get_db, init_db, Channel, Platform, PlatformField, Topic,
     PlatformData, Employee, UploadLog, ScheduleRule,
-    OAuthToken, QuotaUsage,
+    OAuthToken, QuotaUsage, AuthToken,
 )
 from app.models import (
     ChannelCreate, ChannelUpdate, ChannelResponse,
@@ -68,19 +68,22 @@ def _generate_token(employee_id: int) -> str:
     """Generate a secure random token"""
     return f"{employee_id}:{secrets.token_hex(16)}"
 
-# In-memory token store (cleared on restart — employees must re-login)
-_active_tokens: dict[str, int] = {}  # token -> employee_id
+def _save_token(db: Session, token: str, employee_id: int):
+    """Save token to database for persistence across restarts"""
+    db.add(AuthToken(token=token, employee_id=employee_id))
+    db.commit()
 
-def _validate_token(token: str) -> int | None:
-    """Returns employee_id if token is valid, else None"""
-    return _active_tokens.get(token)
+def _validate_token_db(db: Session, token: str) -> int | None:
+    """Returns employee_id if token is valid (from DB), else None"""
+    auth = db.query(AuthToken).filter(AuthToken.token == token).first()
+    return auth.employee_id if auth else None
 
 def require_auth(authorization: str = Header(None), db: Session = Depends(get_db)) -> Employee:
     """Dependency: require valid token, return Employee object"""
     if not authorization:
         raise HTTPException(401, "مطلوب تسجيل دخول")
     token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
-    emp_id = _validate_token(token)
+    emp_id = _validate_token_db(db, token)
     if emp_id is None:
         raise HTTPException(401, "التوكن غير صالح — سجل دخول من جديد")
     emp = db.query(Employee).filter(Employee.id == emp_id, Employee.is_active == True).first()
@@ -205,7 +208,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         emp.pin = _hash_pin(req.pin)
         db.commit()
     token = _generate_token(emp.id)
-    _active_tokens[token] = emp.id
+    _save_token(db, token, emp.id)
     return LoginResponse(employee_id=emp.id, name=emp.name, role=emp.role, token=token)
 
 
@@ -270,7 +273,7 @@ def list_platform_fields(platform_id: int, db: Session = Depends(get_db)):
     ).order_by(PlatformField.display_order).all()
 
 @app.post("/api/platforms/{platform_id}/fields", response_model=PlatformFieldResponse)
-def create_field(platform_id: int, f: PlatformFieldCreate, db: Session = Depends(get_db)):
+def create_field(platform_id: int, f: PlatformFieldCreate, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
     plat = db.query(Platform).filter(Platform.id == platform_id).first()
     if not plat:
         raise HTTPException(404, "المنصة مش موجودة")
@@ -285,7 +288,7 @@ def create_field(platform_id: int, f: PlatformFieldCreate, db: Session = Depends
     return obj
 
 @app.put("/api/platforms/fields/{field_id}", response_model=PlatformFieldResponse)
-def update_field(field_id: int, data: PlatformFieldUpdate, db: Session = Depends(get_db)):
+def update_field(field_id: int, data: PlatformFieldUpdate, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
     f = db.query(PlatformField).filter(PlatformField.id == field_id).first()
     if not f:
         raise HTTPException(404, "الحقل مش موجود")
@@ -296,7 +299,7 @@ def update_field(field_id: int, data: PlatformFieldUpdate, db: Session = Depends
     return f
 
 @app.delete("/api/platforms/fields/{field_id}")
-def delete_field(field_id: int, db: Session = Depends(get_db)):
+def delete_field(field_id: int, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
     f = db.query(PlatformField).filter(PlatformField.id == field_id).first()
     if not f:
         raise HTTPException(404, "الحقل مش موجود")
@@ -310,15 +313,21 @@ def delete_field(field_id: int, db: Session = Depends(get_db)):
 @app.get("/api/topics", response_model=List[TopicResponse])
 def list_topics(
     channel_id: Optional[int] = None,
+    platform_id: Optional[int] = None,
     status: Optional[str] = None,
     content_type: Optional[str] = None,
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
     q = db.query(Topic)
     if channel_id:
         q = q.filter(Topic.channel_id == channel_id)
+    if platform_id:
+        # Filter topics that have a platform_data entry for this platform
+        q = q.filter(Topic.id.in_(
+            db.query(PlatformData.topic_id).filter(PlatformData.platform_id == platform_id)
+        ))
     if status:
         q = q.filter(Topic.status == status)
     if content_type:
@@ -333,7 +342,7 @@ def list_topics(
     return result
 
 @app.post("/api/topics", response_model=TopicResponse)
-def create_topic(data: TopicCreate, db: Session = Depends(get_db), schedule_start_from: datetime | None = None, target_platform_ids: list | None = None):
+def create_topic(data: TopicCreate, db: Session = Depends(get_db), target_platform_ids: list | None = None):
     # Check channel exists
     ch = db.query(Channel).filter(Channel.id == data.channel_id).first()
     if not ch:
@@ -394,14 +403,6 @@ def create_topic(data: TopicCreate, db: Session = Depends(get_db), schedule_star
         db.rollback()
         raise HTTPException(409, "بيانات المنصة مكررة")
 
-    # Auto-schedule: حساب التوقيت التلقائي للمنصات اللي مفيهاش توقيت
-    from app.scheduler import auto_schedule_topic
-    try:
-        auto_schedule_topic(db, topic.id, data.channel_id, data.content_type, start_from=schedule_start_from)
-    except Exception as e:
-        print(f"[Scheduler] Auto-schedule failed for topic {topic.id}: {e}")
-        # Don't rollback — topic already committed, scheduling is optional
-
     db.refresh(topic)
     resp = TopicResponse.model_validate(topic)
     resp.platform_data = [PlatformDataResponse.model_validate(pd) for pd in topic.platform_data]
@@ -409,21 +410,13 @@ def create_topic(data: TopicCreate, db: Session = Depends(get_db), schedule_star
 
 @app.post("/api/topics/batch")
 def create_topics_batch(data: TopicBatchCreate, db: Session = Depends(get_db)):
-    # Parse schedule_start_from if provided
-    start_from = None
-    if data.schedule_start_from:
-        try:
-            start_from = datetime.fromisoformat(data.schedule_start_from)
-        except ValueError:
-            raise HTTPException(400, f"تنسيق تاريخ غلط: {data.schedule_start_from} — استخدم ISO format مثل 2026-04-15")
-
     created = []
     errors = []
     from app.database import SessionLocal
     for i, t in enumerate(data.topics):
         topic_db = SessionLocal()
         try:
-            result = create_topic(t, topic_db, schedule_start_from=start_from)
+            result = create_topic(t, topic_db)
             created.append(result)
         except HTTPException as e:
             errors.append(f"topic {i}: {e.detail}")
@@ -763,6 +756,43 @@ def confirm_upload(topic_id: int, platform_id: int, req: UploadConfirm, db: Sess
 
     return {"ok": True, "status": "uploaded"}
 
+@app.post("/api/topics/{topic_id}/platforms/{platform_id}/revert-upload")
+def revert_upload(topic_id: int, platform_id: int, db: Session = Depends(get_db), _admin: Employee = Depends(require_admin)):
+    """إرجاع حالة المنصة من 'uploaded' لـ 'pending' — أدمن فقط"""
+    pd = db.query(PlatformData).filter(
+        PlatformData.topic_id == topic_id,
+        PlatformData.platform_id == platform_id,
+    ).first()
+    if not pd:
+        raise HTTPException(404, "بيانات المنصة مش موجودة")
+    if pd.upload_status != "uploaded":
+        raise HTTPException(400, "المنصة دي مش مرفوعة أصلاً")
+    pd.upload_status = "pending"
+    pd.uploaded_by = None
+    pd.uploaded_at = None
+    pd.lock_holder = None
+    pd.lock_time = None
+    # Update topic status
+    topic = db.query(Topic).filter(Topic.id == topic_id).first()
+    if topic:
+        topic.status = "pending"
+        # Check if any other platform is still uploaded → partial
+        other_uploaded = db.query(PlatformData).filter(
+            PlatformData.topic_id == topic_id,
+            PlatformData.platform_id != platform_id,
+            PlatformData.upload_status == "uploaded",
+        ).count()
+        if other_uploaded > 0:
+            topic.status = "partial"
+    db.add(UploadLog(
+        topic_id=topic_id, platform_id=platform_id, employee_id=_admin.id,
+        action="revert_upload",
+        details=json.dumps({"reason": "admin_revert"}, ensure_ascii=False),
+    ))
+    db.commit()
+    return {"ok": True, "status": "pending"}
+
+
 @app.post("/api/topics/{topic_id}/platforms/{platform_id}/copy-log")
 def log_copy(topic_id: int, platform_id: int, req: CopyLogRequest, db: Session = Depends(get_db)):
     emp = db.query(Employee).filter(Employee.id == req.employee_id).first()
@@ -953,17 +983,41 @@ def list_logs(
 # ========== Dashboard ==========
 
 @app.get("/api/dashboard/stats", response_model=DashboardStats)
-def dashboard_stats(db: Session = Depends(get_db)):
+def dashboard_stats(
+    channel_id: Optional[int] = None,
+    platform_id: Optional[int] = None,
+    content_type: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     # Use UTC for consistency with DB timestamps
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
-    total = db.query(Topic).count()
-    pending = db.query(PlatformData).filter(PlatformData.upload_status == "pending").count()
-    uploaded_today = db.query(PlatformData).filter(
+    # Build topic ID subquery (efficient — stays in DB, no Python list)
+    topic_subq = db.query(Topic.id)
+    if channel_id:
+        topic_subq = topic_subq.filter(Topic.channel_id == channel_id)
+    if content_type:
+        topic_subq = topic_subq.filter(Topic.content_type == content_type)
+    if platform_id:
+        topic_subq = topic_subq.filter(Topic.id.in_(
+            db.query(PlatformData.topic_id).filter(PlatformData.platform_id == platform_id)
+        ))
+
+    total = topic_subq.count()
+
+    # Platform data query filtered by topic subquery
+    pd_base = db.query(PlatformData).filter(
+        PlatformData.topic_id.in_(topic_subq.subquery())
+    )
+    if platform_id:
+        pd_base = pd_base.filter(PlatformData.platform_id == platform_id)
+
+    pending = pd_base.filter(PlatformData.upload_status == "pending").count()
+    uploaded_today = pd_base.filter(
         PlatformData.upload_status == "uploaded",
         PlatformData.uploaded_at >= today_start,
     ).count()
-    locked = db.query(PlatformData).filter(PlatformData.upload_status == "locked").count()
+    locked = pd_base.filter(PlatformData.upload_status == "locked").count()
 
     return DashboardStats(
         total_topics=total,
@@ -971,6 +1025,77 @@ def dashboard_stats(db: Session = Depends(get_db)):
         uploaded_today=uploaded_today,
         locked_now=locked,
     )
+
+
+# ========== Navigation Counts ==========
+
+@app.get("/api/nav/channel-counts")
+def nav_channel_counts(db: Session = Depends(get_db)):
+    """عدد المواضيع المعلقة لكل قناة"""
+    channels_list = db.query(Channel).filter(Channel.is_active == True).all()
+    result = []
+    for ch in channels_list:
+        pending = db.query(PlatformData).join(Topic).filter(
+            Topic.channel_id == ch.id,
+            PlatformData.upload_status.in_(["pending", "locked"]),
+        ).count()
+        total = db.query(Topic).filter(Topic.channel_id == ch.id).count()
+        result.append({
+            "channel_id": ch.id,
+            "name": ch.name,
+            "display_name": ch.display_name or ch.name,
+            "pending": pending,
+            "total": total,
+        })
+    return result
+
+@app.get("/api/nav/platform-counts/{channel_id}")
+def nav_platform_counts(channel_id: int, db: Session = Depends(get_db)):
+    """عدد المواضيع المعلقة لكل منصة في قناة معينة"""
+    platforms_list = db.query(Platform).filter(Platform.is_active == True).all()
+    result = []
+    for pl in platforms_list:
+        pending = db.query(PlatformData).join(Topic).filter(
+            Topic.channel_id == channel_id,
+            PlatformData.platform_id == pl.id,
+            PlatformData.upload_status.in_(["pending", "locked"]),
+        ).count()
+        total = db.query(PlatformData).join(Topic).filter(
+            Topic.channel_id == channel_id,
+            PlatformData.platform_id == pl.id,
+        ).count()
+        result.append({
+            "platform_id": pl.id,
+            "name": pl.name,
+            "display_name": pl.display_name or pl.name,
+            "mode": pl.mode,
+            "pending": pending,
+            "total": total,
+        })
+    return result
+
+@app.get("/api/nav/content-counts/{channel_id}/{platform_id}")
+def nav_content_counts(channel_id: int, platform_id: int, db: Session = Depends(get_db)):
+    """عدد المواضيع المعلقة لكل نوع محتوى في قناة ومنصة معينة"""
+    result = []
+    for ct in ["shorts", "long"]:
+        pending = db.query(PlatformData).join(Topic).filter(
+            Topic.channel_id == channel_id,
+            Topic.content_type == ct,
+            PlatformData.platform_id == platform_id,
+            PlatformData.upload_status.in_(["pending", "locked"]),
+        ).count()
+        total = db.query(PlatformData).join(Topic).filter(
+            Topic.channel_id == channel_id,
+            Topic.content_type == ct,
+            PlatformData.platform_id == platform_id,
+        ).count()
+        result.append({
+            "content_type": ct,
+            "pending": pending,
+            "total": total,
+        })
+    return result
 
 
 # ========== Webhook (MG Ranner Integration) ==========
@@ -1453,7 +1578,6 @@ async def import_word(
     channel_id: int = Form(...),
     content_type: str = Form("shorts"),
     platform_ids: str = Form(""),
-    schedule_start_from: str = Form(None),
     db: Session = Depends(get_db),
 ):
     """استيراد مواضيع من ملف Word (.docx)"""
@@ -1508,13 +1632,6 @@ async def import_word(
         # Create topics
         created = 0
         create_errors = []
-        # Parse schedule start date
-        start_dt = None
-        if schedule_start_from:
-            try:
-                start_dt = datetime.fromisoformat(schedule_start_from)
-            except ValueError:
-                pass
 
         # Parse platform_ids filter
         selected_platform_ids = None
@@ -1529,7 +1646,7 @@ async def import_word(
             topic_db = SessionLocal()
             try:
                 topic_create = TopicCreate(**t_data)
-                create_topic(topic_create, topic_db, schedule_start_from=start_dt, target_platform_ids=selected_platform_ids)
+                create_topic(topic_create, topic_db, target_platform_ids=selected_platform_ids)
                 created += 1
             except HTTPException as e:
                 create_errors.append(f"موضوع #{t_data.get('topic_number', '?')}: {e.detail}")

@@ -50,14 +50,47 @@
     <div class="login-error" id="login-error"></div>
 </div>
 
-<!-- ===== DASHBOARD ===== -->
-<div id="dashboard-screen" class="hidden">
+<!-- ===== CHANNEL SELECTION ===== -->
+<div id="channel-screen" class="hidden">
     <div class="header">
         <h1>Upload Manager</h1>
         <div style="display:flex;align-items:center;gap:10px">
-            <span class="user-info" id="user-name"></span>
+            <span class="user-info" id="user-name-ch"></span>
             <button class="logout-btn" onclick="logout()">خروج</button>
         </div>
+    </div>
+    <div class="nav-title">اختار القناة</div>
+    <div class="nav-grid" id="channel-list"></div>
+</div>
+
+<!-- ===== PLATFORM SELECTION ===== -->
+<div id="platform-screen" class="hidden">
+    <div class="header">
+        <button class="back-btn" onclick="goToChannels()">رجوع</button>
+        <h1 id="platform-screen-title">اختار المنصة</h1>
+        <div></div>
+    </div>
+    <div class="nav-title" id="platform-subtitle"></div>
+    <div class="nav-grid" id="platform-list"></div>
+</div>
+
+<!-- ===== CONTENT TYPE SELECTION ===== -->
+<div id="content-screen" class="hidden">
+    <div class="header">
+        <button class="back-btn" onclick="goToPlatforms()">رجوع</button>
+        <h1 id="content-screen-title">نوع المحتوى</h1>
+        <div></div>
+    </div>
+    <div class="nav-title" id="content-subtitle"></div>
+    <div class="nav-grid" id="content-list"></div>
+</div>
+
+<!-- ===== TOPIC LIST ===== -->
+<div id="topics-screen" class="hidden">
+    <div class="header">
+        <button class="back-btn" onclick="goToContentType()">رجوع</button>
+        <h1 id="topics-screen-title">المواضيع</h1>
+        <div></div>
     </div>
 
     <div class="stats-bar" id="stats-bar">
@@ -79,7 +112,7 @@
         </div>
     </div>
 
-    <div class="filters" id="channel-filters"></div>
+    <div class="nav-path" id="nav-path"></div>
 
     <div class="topic-list" id="topic-list">
         <div class="loading">جاري التحميل...</div>
@@ -99,8 +132,6 @@
             <h3 id="upload-topic-title"></h3>
             <div class="meta" id="upload-meta"></div>
         </div>
-
-        <div class="platform-tabs" id="platform-tabs"></div>
 
         <div id="schedule-section"></div>
 

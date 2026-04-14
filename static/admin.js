@@ -654,8 +654,6 @@ function renderRescheduleList() {
         const schedStr = v.scheduled_time ? formatDateTime(v.scheduled_time) : 'مش محدد';
         const statusLabel = {'pending':'في الانتظار','locked':'مقفول','uploading':'جاري الرفع','uploaded':'تم الرفع'}[v.upload_status] || v.upload_status;
         const statusClass = v.upload_status === 'uploaded' ? 'status-active' : '';
-        const disabled = v.upload_status === 'uploaded' ? 'disabled' : '';
-
         html += `
             <tr style="border-bottom:1px solid var(--border)">
                 <td style="padding:8px">${esc(v.topic_number)}</td>
@@ -663,7 +661,7 @@ function renderRescheduleList() {
                 <td style="padding:8px" dir="ltr">${esc(schedStr)}</td>
                 <td style="padding:8px"><span class="status-badge ${statusClass}">${esc(statusLabel)}</span></td>
                 <td style="padding:8px">
-                    <button class="btn-sm btn-edit" ${disabled} onclick="editVideoSchedule(${v.topic_id}, ${v.platform_id}, '${v.scheduled_time || ''}', ${v.topic_number})">تعديل</button>
+                    <button class="btn-sm btn-edit" onclick="editVideoSchedule(${v.topic_id}, ${v.platform_id}, '${v.scheduled_time || ''}', ${v.topic_number}, '${v.upload_status}')">تعديل</button>
                 </td>
             </tr>`;
     }
@@ -689,9 +687,21 @@ function _toLocalIso(iso) {
     return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + 'T' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
 }
 
-function editVideoSchedule(topicId, platformId, currentTime, topicNum) {
+function editVideoSchedule(topicId, platformId, currentTime, topicNum, uploadStatus) {
     const isoVal = _toLocalIso(currentTime);
-    openForm(`تعديل موعد فيديو #${topicNum}`, `
+    const isUploaded = uploadStatus === 'uploaded';
+
+    let revertSection = '';
+    if (isUploaded) {
+        revertSection = `
+        <div style="margin-top:12px;padding:12px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px">
+            <div style="font-size:13px;font-weight:600;color:#dc2626;margin-bottom:8px">إلغاء حالة الرفع</div>
+            <div style="font-size:12px;color:#7f1d1d;margin-bottom:8px">الموضوع ده حالته "تم الرفع". لو عايز ترجعه لحالة "لم يتم الرفع" اضغط الزرار ده:</div>
+            <button type="button" class="btn-sm" style="background:#dc2626;color:#fff;width:100%;padding:10px" onclick="revertUploadFromAdmin(${topicId}, ${platformId}, ${topicNum})">إلغاء الرفع — إرجاع لـ "لم يتم الرفع"</button>
+        </div>`;
+    }
+
+    openForm(`تعديل فيديو #${topicNum}`, `
         <div class="form-group">
             <label>الموعد الجديد</label>
             <input type="datetime-local" id="f-newtime" value="${isoVal}" dir="ltr" style="font-family:monospace">
@@ -707,6 +717,7 @@ function editVideoSchedule(topicId, platformId, currentTime, topicNum) {
             <b>فردي:</b> يغيّر موعد الفيديو ده بس<br>
             <b>متتالي:</b> يغيّر موعده ويعيد جدولة كل الفيديوهات اللي بعده حسب مواعيد الجدولة الثابتة
         </div>
+        ${revertSection}
     `, async () => {
         const newTime = formVal('f-newtime');
         if (!newTime) { toast('اختار موعد', 'error'); return; }
@@ -724,6 +735,20 @@ function editVideoSchedule(topicId, platformId, currentTime, topicNum) {
             toast(e.message || 'فشل التعديل', 'error');
         }
     });
+}
+
+async function revertUploadFromAdmin(topicId, platformId, topicNum) {
+    if (!confirm(`هل متأكد إنك عايز تلغي حالة الرفع لفيديو #${topicNum}؟\nالموضوع هيرجع "لم يتم الرفع" وهيحتاج يترفع تاني.`)) return;
+    if (!confirm(`تأكيد نهائي: إلغاء الرفع لفيديو #${topicNum}؟`)) return;
+
+    try {
+        await api('POST', `/api/topics/${topicId}/platforms/${platformId}/revert-upload`);
+        toast(`تم إلغاء الرفع لفيديو #${topicNum} — رجع "لم يتم الرفع"`, 'success');
+        closeForm();
+        await loadRescheduleVideos();
+    } catch (e) {
+        toast(e.message || 'فشل إلغاء الرفع', 'error');
+    }
 }
 
 function rescheduleFirstVideo() {
@@ -971,10 +996,8 @@ function renderImport() {
                 <label>ملف Word (.docx)</label>
                 <input type="file" id="import-file" accept=".docx">
             </div>
-            <div class="form-group">
-                <label>بداية الجدولة من تاريخ (اختياري)</label>
-                <input type="date" id="import-schedule-start" dir="ltr" style="cursor:pointer;padding:8px 12px;font-size:14px;min-height:40px" onclick="this.showPicker&&this.showPicker()">
-                <div style="font-size:11px;color:var(--text2);margin-top:4px">لو فاضي → الجدولة تبدأ من أقرب وقت فاضي</div>
+            <div style="font-size:12px;color:var(--text2);background:var(--surface2);padding:8px 12px;border-radius:6px;margin-top:4px">
+                📌 المواضيع هتتضاف بدون مواعيد — حدد المواعيد بنفسك بعد الاستيراد من تاب "تعديل المواعيد"
             </div>
             <button class="btn-import" id="import-btn" onclick="doImport()" disabled>استيراد</button>
         </div>
@@ -1003,7 +1026,6 @@ async function doImport() {
         return;
     }
 
-    const scheduleStart = document.getElementById('import-schedule-start').value || '';
     const selectedPlatforms = [...document.querySelectorAll('.import-platform-cb:checked')].map(cb => cb.value);
     if (selectedPlatforms.length === 0) {
         toast('اختار منصة واحدة على الأقل', 'error');
@@ -1016,7 +1038,6 @@ async function doImport() {
     formData.append('channel_id', channelId);
     formData.append('content_type', contentType);
     formData.append('platform_ids', selectedPlatforms.join(','));
-    if (scheduleStart) formData.append('schedule_start_from', scheduleStart);
 
     try {
         const res = await fetch('/api/import/word', {

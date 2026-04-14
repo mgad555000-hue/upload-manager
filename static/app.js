@@ -1,4 +1,4 @@
-/* Upload Manager — Frontend Logic */
+/* Upload Manager — Frontend Logic (v2: Channel → Platform → Content Type → Topics) */
 
 const API = '';  // Same origin
 let currentUser = null;  // {employee_id, name, role, token}
@@ -7,8 +7,12 @@ let platforms = [];
 let platformFields = {};  // {platform_id: [fields]}
 let channels = [];
 let currentTopic = null;
-let currentPlatformId = null;
 let copiedFields = new Set();
+
+// Navigation state
+let selectedChannel = null;   // {id, name, display_name, ...}
+let selectedPlatform = null;  // {platform_id, name, display_name, ...}
+let selectedContentType = null; // "shorts" or "long"
 
 // ===== API Helper =====
 async function api(method, path, body) {
@@ -20,7 +24,6 @@ async function api(method, path, body) {
     if (body) opts.body = JSON.stringify(body);
     const res = await fetch(API + path, opts);
     if (res.status === 401) {
-        // Token expired or invalid — force re-login
         localStorage.removeItem('user');
         currentUser = null;
         showScreen('login-screen');
@@ -91,7 +94,7 @@ async function doLogin() {
         const data = await api('POST', '/api/auth/login', { pin });
         currentUser = data;
         localStorage.setItem('user', JSON.stringify(data));
-        showDashboard();
+        goToChannels();
     } catch (e) {
         document.getElementById('login-error').textContent = e.message;
         pin = '';
@@ -104,127 +107,251 @@ function logout() {
     localStorage.removeItem('user');
     pin = '';
     updatePinDots();
+    selectedChannel = null;
+    selectedPlatform = null;
+    selectedContentType = null;
     showScreen('login-screen');
 }
 
 // ===== Screen Navigation =====
 function showScreen(id) {
-    ['login-screen', 'dashboard-screen', 'upload-screen'].forEach(s => {
+    ['login-screen', 'channel-screen', 'platform-screen', 'content-screen', 'topics-screen', 'upload-screen'].forEach(s => {
         document.getElementById(s).classList.toggle('hidden', s !== id);
     });
 }
 
-function goBack() {
-    showDashboard();
+// ===== 1. Channel Selection =====
+async function goToChannels() {
+    showScreen('channel-screen');
+    const nameEl = document.getElementById('user-name-ch');
+    if (nameEl) nameEl.textContent = currentUser.name;
+
+    selectedChannel = null;
+    selectedPlatform = null;
+    selectedContentType = null;
+
+    const container = document.getElementById('channel-list');
+    container.innerHTML = '<div class="loading">جاري التحميل...</div>';
+
+    try {
+        const data = await api('GET', '/api/nav/channel-counts');
+        let html = '';
+        for (const ch of data) {
+            html += `
+            <div class="nav-card" onclick="selectChannel(${ch.channel_id}, '${escapeAttr(ch.name)}', '${escapeAttr(ch.display_name)}')">
+                <div class="nav-card-title">${escapeHtml(ch.display_name)}</div>
+                <div class="nav-card-meta">${escapeHtml(ch.name)}</div>
+                <div class="nav-card-counts">
+                    <span class="nav-count pending">${ch.pending} معلق</span>
+                    <span class="nav-count total">${ch.total} موضوع</span>
+                </div>
+            </div>`;
+        }
+        if (data.length === 0) {
+            html = '<div class="empty-state"><p>مفيش قنوات</p></div>';
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<div class="empty-state"><p>فشل التحميل — حاول تاني</p></div>';
+        toast(e.message, 'error');
+    }
 }
 
-// ===== Dashboard =====
-async function showDashboard() {
-    showScreen('dashboard-screen');
-    document.getElementById('user-name').textContent = currentUser.name;
+function selectChannel(id, name, displayName) {
+    selectedChannel = { id, name, display_name: displayName };
+    goToPlatforms();
+}
 
-    // Load data in parallel
-    let statsData, topicsData, platformsData, channelsData;
+// ===== 2. Platform Selection =====
+async function goToPlatforms() {
+    if (!selectedChannel) { goToChannels(); return; }
+    showScreen('platform-screen');
+
+    selectedPlatform = null;
+    selectedContentType = null;
+
+    document.getElementById('platform-subtitle').textContent = selectedChannel.display_name;
+
+    const container = document.getElementById('platform-list');
+    container.innerHTML = '<div class="loading">جاري التحميل...</div>';
+
     try {
-        [statsData, topicsData, platformsData, channelsData] = await Promise.all([
-            api('GET', '/api/dashboard/stats'),
-            api('GET', '/api/topics?limit=200&status=pending'),
-            api('GET', '/api/platforms'),
-            api('GET', '/api/channels'),
+        const data = await api('GET', `/api/nav/platform-counts/${selectedChannel.id}`);
+        let html = '';
+        const icons = { youtube: '▶', tiktok: '♪', facebook: 'f', upscrolled: '↑' };
+        for (const pl of data) {
+            if (pl.total === 0) continue; // Skip platforms with no topics
+            const icon = icons[pl.name.toLowerCase()] || '●';
+            html += `
+            <div class="nav-card platform-card" onclick="selectPlatform(${pl.platform_id}, '${escapeAttr(pl.name)}', '${escapeAttr(pl.display_name)}', '${escapeAttr(pl.mode)}')">
+                <div class="nav-card-icon">${icon}</div>
+                <div class="nav-card-title">${escapeHtml(pl.display_name)}</div>
+                <div class="nav-card-meta">${pl.mode === 'auto' ? 'أوتوماتيك' : 'يدوي'}</div>
+                <div class="nav-card-counts">
+                    <span class="nav-count pending">${pl.pending} معلق</span>
+                    <span class="nav-count total">${pl.total} موضوع</span>
+                </div>
+            </div>`;
+        }
+        if (html === '') {
+            html = '<div class="empty-state"><p>مفيش مواضيع في القناة دي</p></div>';
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<div class="empty-state"><p>فشل التحميل</p></div>';
+        toast(e.message, 'error');
+    }
+}
+
+function selectPlatform(id, name, displayName, mode) {
+    selectedPlatform = { platform_id: id, name, display_name: displayName, mode };
+    goToContentType();
+}
+
+// ===== 3. Content Type Selection =====
+async function goToContentType() {
+    if (!selectedChannel || !selectedPlatform) { goToPlatforms(); return; }
+    showScreen('content-screen');
+
+    selectedContentType = null;
+
+    document.getElementById('content-subtitle').textContent =
+        selectedChannel.display_name + ' → ' + selectedPlatform.display_name;
+
+    const container = document.getElementById('content-list');
+    container.innerHTML = '<div class="loading">جاري التحميل...</div>';
+
+    try {
+        const data = await api('GET', `/api/nav/content-counts/${selectedChannel.id}/${selectedPlatform.platform_id}`);
+        let html = '';
+        const labels = { shorts: 'شورتس (Shorts)', long: 'فيديو طويل (Long)' };
+        const icons = { shorts: '⚡', long: '🎬' };
+        for (const ct of data) {
+            if (ct.total === 0) continue;
+            html += `
+            <div class="nav-card content-card" onclick="selectContentType('${ct.content_type}')">
+                <div class="nav-card-icon">${icons[ct.content_type] || ''}</div>
+                <div class="nav-card-title">${labels[ct.content_type] || ct.content_type}</div>
+                <div class="nav-card-counts">
+                    <span class="nav-count pending">${ct.pending} معلق</span>
+                    <span class="nav-count total">${ct.total} موضوع</span>
+                </div>
+            </div>`;
+        }
+        if (html === '') {
+            html = '<div class="empty-state"><p>مفيش مواضيع</p></div>';
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<div class="empty-state"><p>فشل التحميل</p></div>';
+        toast(e.message, 'error');
+    }
+}
+
+function selectContentType(ct) {
+    selectedContentType = ct;
+    showTopics();
+}
+
+// ===== 4. Topic List =====
+async function showTopics() {
+    if (!selectedChannel || !selectedPlatform || !selectedContentType) { goToContentType(); return; }
+    showScreen('topics-screen');
+
+    const ctLabel = selectedContentType === 'shorts' ? 'شورتس' : 'لونج';
+    document.getElementById('topics-screen-title').textContent =
+        selectedPlatform.display_name + ' — ' + ctLabel;
+
+    // Breadcrumb path
+    document.getElementById('nav-path').innerHTML =
+        `<span>${escapeHtml(selectedChannel.display_name)}</span> → <span>${escapeHtml(selectedPlatform.display_name)}</span> → <span>${ctLabel}</span>`;
+
+    const container = document.getElementById('topic-list');
+    container.innerHTML = '<div class="loading">جاري التحميل...</div>';
+
+    try {
+        // Load stats, topics, and platform fields in parallel
+        const [statsData, topicsData] = await Promise.all([
+            api('GET', `/api/dashboard/stats?channel_id=${selectedChannel.id}&platform_id=${selectedPlatform.platform_id}&content_type=${selectedContentType}`),
+            api('GET', `/api/topics?channel_id=${selectedChannel.id}&platform_id=${selectedPlatform.platform_id}&content_type=${selectedContentType}&limit=500`),
         ]);
+
+        // Load fields for selected platform
+        if (!platformFields[selectedPlatform.platform_id]) {
+            platformFields[selectedPlatform.platform_id] = await api('GET', `/api/platforms/${selectedPlatform.platform_id}/fields`);
+        }
+
+        // Stats
+        document.getElementById('stat-total').textContent = statsData.total_topics;
+        document.getElementById('stat-pending').textContent = statsData.pending_uploads;
+        document.getElementById('stat-today').textContent = statsData.uploaded_today;
+        document.getElementById('stat-locked').textContent = statsData.locked_now;
+
+        topics = topicsData;
+        renderTopicList();
     } catch (e) {
-        toast('فشل تحميل البيانات — حاول تاني', 'error');
-        return;
+        container.innerHTML = '<div class="empty-state"><p>فشل تحميل البيانات</p></div>';
+        toast(e.message, 'error');
     }
-
-    // Stats
-    document.getElementById('stat-total').textContent = statsData.total_topics;
-    document.getElementById('stat-pending').textContent = statsData.pending_uploads;
-    document.getElementById('stat-today').textContent = statsData.uploaded_today;
-    document.getElementById('stat-locked').textContent = statsData.locked_now;
-
-    platforms = platformsData;
-    channels = channelsData;
-    topics = topicsData;
-
-    // Load fields for all platforms in parallel
-    try {
-        await Promise.all(platforms.map(async p => {
-            platformFields[p.id] = await api('GET', `/api/platforms/${p.id}/fields`);
-        }));
-    } catch (e) {
-        toast('فشل تحميل حقول المنصات', 'error');
-    }
-
-    renderChannelFilters();
-    renderTopicList();
-}
-
-let activeChannelFilter = null;
-
-function renderChannelFilters() {
-    const container = document.getElementById('channel-filters');
-    let html = `<button class="filter-btn ${!activeChannelFilter ? 'active' : ''}" onclick="filterChannel(null)">الكل</button>`;
-    for (const ch of channels) {
-        const active = activeChannelFilter === ch.id ? 'active' : '';
-        html += `<button class="filter-btn ${active}" onclick="filterChannel(${ch.id})">${escapeHtml(ch.display_name || ch.name)}</button>`;
-    }
-    container.innerHTML = html;
-}
-
-function filterChannel(chId) {
-    activeChannelFilter = chId;
-    renderChannelFilters();
-    renderTopicList();
 }
 
 function renderTopicList() {
     const container = document.getElementById('topic-list');
-    let filtered = topics;
-    if (activeChannelFilter) {
-        filtered = topics.filter(t => t.channel_id === activeChannelFilter);
-    }
-    // Only show topics that have pending platforms
-    filtered = filtered.filter(t => t.status !== 'completed');
 
-    if (filtered.length === 0) {
-        container.innerHTML = '<div class="empty-state"><div class="icon">&#10003;</div><p>مفيش فيديوهات محتاجة رفع</p></div>';
+    if (topics.length === 0) {
+        container.innerHTML = '<div class="empty-state"><div class="icon">&#10003;</div><p>مفيش مواضيع</p></div>';
         return;
     }
 
     let html = '';
-    for (const t of filtered) {
-        const ch = channels.find(c => c.id === t.channel_id);
-        const chName = escapeHtml(ch ? (ch.display_name || ch.name) : '');
-        const badges = (t.platform_data || []).map(pd => {
-            const pl = platforms.find(p => p.id === pd.platform_id);
-            const plName = pl ? (pl.display_name || pl.name) : pd.platform_id;
-            return `<span class="badge ${pd.upload_status}">${escapeHtml(plName)}</span>`;
-        }).join('');
+    for (const t of topics) {
+        // Find platform_data for the selected platform only
+        const pd = (t.platform_data || []).find(p => p.platform_id === selectedPlatform.platform_id);
+        if (!pd) continue;
 
-        // Find next scheduled time
+        const isUploaded = pd.upload_status === 'uploaded';
+        const isLocked = pd.upload_status === 'locked';
+        const statusClass = isUploaded ? 'topic-uploaded' : (isLocked ? 'topic-locked' : '');
+        const statusBadge = isUploaded
+            ? '<span class="topic-status-badge uploaded">تم الرفع ✓</span>'
+            : isLocked
+                ? '<span class="topic-status-badge locked">مقفول</span>'
+                : '<span class="topic-status-badge pending">معلق</span>';
+
+        // Scheduled time
         let timeStr = '';
-        const nextPd = (t.platform_data || []).find(pd => pd.scheduled_time && pd.upload_status !== 'uploaded');
-        if (nextPd) {
-            timeStr = formatDate(nextPd.scheduled_time);
+        if (pd.scheduled_time && !isUploaded) {
+            timeStr = formatDate(pd.scheduled_time);
         }
 
+        // Admin can open uploaded topics to revert them
+        const isAdmin = currentUser && currentUser.role === 'admin';
+        const canClick = !isUploaded || isAdmin;
+
         html += `
-        <div class="topic-card" onclick="openTopic(${t.id})">
+        <div class="topic-card ${statusClass}" onclick="${canClick ? `openTopic(${t.id})` : ''}" ${canClick ? '' : 'style="cursor:default"'}>
             <div class="topic-top">
                 <span class="topic-number">#${t.topic_number}</span>
-                <span class="topic-channel">${chName}</span>
+                ${statusBadge}
             </div>
             <div class="topic-title">${escapeHtml(t.title || 'بدون عنوان')}</div>
-            <div class="platform-badges">${badges}</div>
             ${timeStr ? `<div class="topic-time">&#128337; ${timeStr}</div>` : ''}
+            ${isUploaded && pd.uploaded_at ? `<div class="topic-time uploaded-time">تم الرفع: ${formatDate(pd.uploaded_at)}</div>` : ''}
+            ${isUploaded && isAdmin ? '<div class="topic-time" style="color:var(--primary)">اضغط للتعديل (أدمن)</div>' : ''}
         </div>`;
     }
-    container.innerHTML = html;
+
+    if (html === '') {
+        container.innerHTML = '<div class="empty-state"><p>مفيش مواضيع</p></div>';
+    } else {
+        container.innerHTML = html;
+    }
 }
 
-// ===== Upload Screen =====
+// ===== 5. Upload Screen =====
 async function openTopic(topicId) {
+    if (!selectedPlatform) return;
+
     try {
         currentTopic = await api('GET', `/api/topics/${topicId}`);
     } catch (e) {
@@ -232,82 +359,145 @@ async function openTopic(topicId) {
         return;
     }
 
+    const pd = (currentTopic.platform_data || []).find(p => p.platform_id === selectedPlatform.platform_id);
+    if (!pd) {
+        toast('المنصة مش موجودة في الموضوع ده', 'error');
+        return;
+    }
+
+    const isAdmin = currentUser && currentUser.role === 'admin';
+    const isUploaded = pd.upload_status === 'uploaded';
+
+    // Non-admin can't open uploaded topics
+    if (isUploaded && !isAdmin) {
+        toast('الموضوع ده اترفع بالفعل', 'error');
+        return;
+    }
+
     showScreen('upload-screen');
     copiedFields = new Set();
 
-    const ch = channels.find(c => c.id === currentTopic.channel_id);
-    document.getElementById('upload-title').textContent = `#${currentTopic.topic_number}`;
+    document.getElementById('upload-title').textContent = `#${currentTopic.topic_number} — ${selectedPlatform.display_name}`;
     document.getElementById('upload-topic-title').textContent = currentTopic.title || 'بدون عنوان';
     document.getElementById('upload-meta').textContent =
-        `${ch ? (ch.display_name || ch.name) : ''} | ${currentTopic.content_type}`;
+        `${selectedChannel.display_name} | ${selectedPlatform.display_name} | ${selectedContentType === 'shorts' ? 'شورتس' : 'لونج'}`;
 
-    renderPlatformTabs();
-
-    // Select first pending platform
-    const firstPending = (currentTopic.platform_data || []).find(pd => pd.upload_status !== 'uploaded');
-    if (firstPending) {
-        selectPlatform(firstPending.platform_id);
-    } else {
-        currentPlatformId = null;
-        document.getElementById('fields-section').innerHTML = '<div class="empty-state"><div class="icon">&#10003;</div><p>كل المنصات اترفعت</p></div>';
-        document.getElementById('confirm-section').style.display = 'none';
+    if (isUploaded) {
+        // Admin viewing uploaded topic — show read-only fields + revert button
+        renderUploadedView(pd);
+        return;
     }
-}
 
-function renderPlatformTabs() {
-    const container = document.getElementById('platform-tabs');
-    let html = '';
-    for (const pd of (currentTopic.platform_data || [])) {
-        const pl = platforms.find(p => p.id === pd.platform_id);
-        const plName = pl ? (pl.display_name || pl.name) : '';
-        let cls = '';
-        if (pd.upload_status === 'uploaded') cls = 'uploaded';
-        else if (pd.upload_status === 'locked' && pd.lock_holder !== currentUser.employee_id) cls = 'locked-other';
-        else if (pd.platform_id === currentPlatformId) cls = 'active';
-        html += `<button class="platform-tab ${cls}" onclick="selectPlatform(${pd.platform_id})" ${pd.upload_status === 'uploaded' ? 'disabled' : ''}>${escapeHtml(plName)}${pd.upload_status === 'uploaded' ? ' ✓' : ''}</button>`;
-    }
-    container.innerHTML = html;
-}
-
-async function selectPlatform(platformId) {
-    const pd = (currentTopic.platform_data || []).find(p => p.platform_id === platformId);
-    if (!pd || pd.upload_status === 'uploaded') return;
-
-    // Lock
+    // Auto-lock for non-uploaded topics
     if (pd.upload_status !== 'locked' || pd.lock_holder !== currentUser.employee_id) {
         try {
-            await api('POST', `/api/topics/${currentTopic.id}/platforms/${platformId}/lock`, { employee_id: currentUser.employee_id });
+            await api('POST', `/api/topics/${currentTopic.id}/platforms/${selectedPlatform.platform_id}/lock`, { employee_id: currentUser.employee_id });
         } catch (e) {
             toast(e.message, 'error');
+            goBack();
             return;
         }
-        // Refresh topic data
+        // Refresh
         try {
             currentTopic = await api('GET', `/api/topics/${currentTopic.id}`);
         } catch (e2) {
-            toast('فشل تحديث البيانات — حاول تاني', 'error');
+            toast('فشل تحديث البيانات', 'error');
+            goBack();
             return;
         }
     }
 
-    currentPlatformId = platformId;
-    copiedFields = new Set();
-    renderPlatformTabs();
     renderFields();
 }
 
+function renderUploadedView(pd) {
+    const fields = platformFields[selectedPlatform.platform_id] || [];
+    let values = {};
+    try { values = JSON.parse(pd.field_values || '{}'); } catch (e) {}
+
+    // Schedule section — show uploaded time
+    const schedSection = document.getElementById('schedule-section');
+    schedSection.innerHTML = `
+    <div class="schedule-card" style="border-color:#065f46">
+        <div class="time-label">حالة الرفع</div>
+        <div class="time-value" style="color:var(--success)">تم الرفع ✓</div>
+        ${pd.uploaded_at ? `<div style="font-size:12px;color:var(--text2);margin-top:6px">تاريخ الرفع: ${formatDate(pd.uploaded_at)}</div>` : ''}
+    </div>`;
+
+    // Fields — read-only (no copy buttons)
+    const container = document.getElementById('fields-section');
+    let html = '';
+    for (const f of fields) {
+        const val = values[f.field_name] || '';
+        const displayVal = Array.isArray(val) ? val.join(', ') : (val || '—');
+        html += `
+        <div class="field-card" style="opacity:0.7">
+            <div class="field-label">
+                <span>${escapeHtml(f.field_label || f.field_name)}</span>
+            </div>
+            <div class="field-value">${escapeHtml(displayVal)}</div>
+        </div>`;
+    }
+    container.innerHTML = html;
+
+    // Hide TikTok section
+    const tiktokSection = document.getElementById('tiktok-section');
+    if (tiktokSection) tiktokSection.style.display = 'none';
+
+    // Confirm section — show revert button instead
+    const confirmSection = document.getElementById('confirm-section');
+    confirmSection.style.display = '';
+    document.getElementById('confirm-progress').textContent = '';
+    const btnEl = document.getElementById('confirm-btn');
+    btnEl.textContent = 'إلغاء الرفع — إرجاع لـ "معلق"';
+    btnEl.disabled = false;
+    btnEl.style.background = 'var(--danger)';
+    btnEl.style.color = '#fff';
+    btnEl.onclick = onRevertClick;
+}
+
+function onRevertClick() {
+    const plName = selectedPlatform.display_name;
+    const topicTitle = currentTopic.title || '#' + currentTopic.topic_number;
+
+    showModal(
+        'إلغاء الرفع',
+        `هل تريد إرجاع "${topicTitle}" على ${plName} لحالة "معلق"؟`,
+        () => {
+            showModal(
+                'تأكيد نهائي',
+                `تأكد: هيتم إلغاء حالة الرفع لـ "${topicTitle}" على ${plName}. الموضوع هيرجع "معلق" وهيحتاج يترفع تاني.`,
+                doRevertUpload
+            );
+        }
+    );
+}
+
+async function doRevertUpload() {
+    try {
+        await api('POST', `/api/topics/${currentTopic.id}/platforms/${selectedPlatform.platform_id}/revert-upload`);
+        toast('تم إلغاء الرفع — الموضوع رجع معلق', 'success');
+        showTopics();
+    } catch (e) {
+        toast(e.message, 'error');
+    }
+}
+
+function goBack() {
+    showTopics();
+}
+
 function renderFields() {
-    const pd = (currentTopic.platform_data || []).find(p => p.platform_id === currentPlatformId);
+    const pd = (currentTopic.platform_data || []).find(p => p.platform_id === selectedPlatform.platform_id);
     if (!pd) return;
 
-    const fields = platformFields[currentPlatformId] || [];
+    const fields = platformFields[selectedPlatform.platform_id] || [];
     let values = {};
     try { values = JSON.parse(pd.field_values || '{}'); } catch (e) {}
 
     // Schedule time
     const schedSection = document.getElementById('schedule-section');
     const schedTime = pd.scheduled_time ? new Date(pd.scheduled_time) : null;
-    // Use local time for datetime-local input (not UTC)
     const schedIso = schedTime ? (schedTime.getFullYear() + '-' + String(schedTime.getMonth()+1).padStart(2,'0') + '-' + String(schedTime.getDate()).padStart(2,'0') + 'T' + String(schedTime.getHours()).padStart(2,'0') + ':' + String(schedTime.getMinutes()).padStart(2,'0')) : '';
     const isAdmin = currentUser && currentUser.role === 'admin';
     schedSection.innerHTML = `
@@ -356,11 +546,10 @@ function renderFields() {
     }
     container.innerHTML = html;
 
-    // TikTok button — show only when platform is TikTok and has video
-    const currentPlatform = platforms.find(p => p.id === currentPlatformId);
+    // TikTok button
     const tiktokSection = document.getElementById('tiktok-section');
     if (tiktokSection) {
-        if (currentPlatform && currentPlatform.name.toLowerCase() === 'tiktok' && currentTopic.video_path) {
+        if (selectedPlatform.name.toLowerCase() === 'tiktok' && currentTopic.video_path) {
             tiktokSection.style.display = '';
             tiktokSection.innerHTML = `
                 <button class="tiktok-btn" id="tiktok-btn" onclick="onTikTokUpload()">
@@ -372,13 +561,18 @@ function renderFields() {
         }
     }
 
-    // Confirm section
+    // Confirm section — reset button state (may have been changed by renderUploadedView)
     document.getElementById('confirm-section').style.display = '';
+    const btnEl = document.getElementById('confirm-btn');
+    btnEl.textContent = 'تأكيد تم الرفع';
+    btnEl.style.background = '';
+    btnEl.style.color = '';
+    btnEl.onclick = null; // Let HTML onclick="onConfirmClick()" take over
     updateConfirmState();
 }
 
 async function copyField(fieldName, btn) {
-    const pd = (currentTopic.platform_data || []).find(p => p.platform_id === currentPlatformId);
+    const pd = (currentTopic.platform_data || []).find(p => p.platform_id === selectedPlatform.platform_id);
     if (!pd) return;
 
     let values = {};
@@ -387,13 +581,11 @@ async function copyField(fieldName, btn) {
     const text = Array.isArray(val) ? val.join(', ') : (val || '');
 
     try {
-        // Try modern Clipboard API first, fallback to execCommand for HTTP
         let copyOk = false;
         if (navigator.clipboard && window.isSecureContext) {
             await navigator.clipboard.writeText(text);
             copyOk = true;
         } else {
-            // Fallback for HTTP (non-secure context)
             const ta = document.createElement('textarea');
             ta.value = text;
             ta.style.position = 'fixed';
@@ -409,7 +601,7 @@ async function copyField(fieldName, btn) {
         copiedFields.add(fieldName);
 
         // Log copy
-        api('POST', `/api/topics/${currentTopic.id}/platforms/${currentPlatformId}/copy-log`, {
+        api('POST', `/api/topics/${currentTopic.id}/platforms/${selectedPlatform.platform_id}/copy-log`, {
             employee_id: currentUser.employee_id,
             field_name: fieldName,
         }).catch(() => {});
@@ -421,7 +613,6 @@ async function copyField(fieldName, btn) {
             btn.textContent = 'تم النسخ ✓';
             btn.classList.add('copied');
         }
-        // Add copied badge
         const labelDiv = card?.querySelector('.field-label');
         if (labelDiv && !labelDiv.querySelector('.copied-badge')) {
             const badge = document.createElement('span');
@@ -449,15 +640,14 @@ async function saveScheduleTime() {
     const cascade = cascadeEl ? cascadeEl.value === 'true' : false;
 
     if (cascade) {
-        // Use the reschedule endpoint for cascade
         try {
             const res = await api('POST', '/api/schedule/reschedule', {
                 topic_id: currentTopic.id,
-                platform_id: currentPlatformId,
+                platform_id: selectedPlatform.platform_id,
                 new_time: val + ':00',
                 cascade: true,
             });
-            const pd = (currentTopic.platform_data || []).find(p => p.platform_id === currentPlatformId);
+            const pd = (currentTopic.platform_data || []).find(p => p.platform_id === selectedPlatform.platform_id);
             if (pd) pd.scheduled_time = val + ':00';
             renderFields();
             toast(`تم تعديل ${res.changed} فيديو`, 'success');
@@ -466,10 +656,10 @@ async function saveScheduleTime() {
         }
     } else {
         try {
-            const res = await api('PATCH', `/api/topics/${currentTopic.id}/platforms/${currentPlatformId}/schedule`, {
+            const res = await api('PATCH', `/api/topics/${currentTopic.id}/platforms/${selectedPlatform.platform_id}/schedule`, {
                 scheduled_time: val + ':00',
             });
-            const pd = (currentTopic.platform_data || []).find(p => p.platform_id === currentPlatformId);
+            const pd = (currentTopic.platform_data || []).find(p => p.platform_id === selectedPlatform.platform_id);
             if (pd) pd.scheduled_time = res.scheduled_time;
             renderFields();
             toast('تم تعديل الموعد', 'success');
@@ -482,10 +672,10 @@ async function saveScheduleTime() {
 async function clearScheduleTime() {
     if (!confirm('إزالة موعد النشر لهذه المنصة؟')) return;
     try {
-        const res = await api('PATCH', `/api/topics/${currentTopic.id}/platforms/${currentPlatformId}/schedule`, {
+        const res = await api('PATCH', `/api/topics/${currentTopic.id}/platforms/${selectedPlatform.platform_id}/schedule`, {
             scheduled_time: null,
         });
-        const pd = (currentTopic.platform_data || []).find(p => p.platform_id === currentPlatformId);
+        const pd = (currentTopic.platform_data || []).find(p => p.platform_id === selectedPlatform.platform_id);
         if (pd) pd.scheduled_time = null;
         renderFields();
         toast('تم إزالة الموعد', 'success');
@@ -495,13 +685,12 @@ async function clearScheduleTime() {
 }
 
 function updateConfirmState() {
-    const fields = platformFields[currentPlatformId] || [];
+    const fields = platformFields[selectedPlatform.platform_id] || [];
     const requiredFields = fields.filter(f => f.is_required && f.is_copyable);
-    const pd = (currentTopic.platform_data || []).find(p => p.platform_id === currentPlatformId);
+    const pd = (currentTopic.platform_data || []).find(p => p.platform_id === selectedPlatform.platform_id);
     let values = {};
     try { values = JSON.parse(pd?.field_values || '{}'); } catch (e) {}
 
-    // Only count required fields that have values
     const requiredWithValues = requiredFields.filter(f => {
         const v = values[f.field_name];
         return v && (Array.isArray(v) ? v.length > 0 : v.toString().trim() !== '');
@@ -514,7 +703,6 @@ function updateConfirmState() {
     const btnEl = document.getElementById('confirm-btn');
 
     if (total === 0) {
-        // No required copyable fields with values — allow confirm directly
         progressEl.textContent = '';
         btnEl.disabled = false;
     } else {
@@ -523,36 +711,35 @@ function updateConfirmState() {
     }
 }
 
+// ===== Double Confirmation =====
 function onConfirmClick() {
-    const pl = platforms.find(p => p.id === currentPlatformId);
-    const plName = pl ? (pl.display_name || pl.name) : '';
+    const plName = selectedPlatform.display_name;
+    const topicTitle = currentTopic.title || '#' + currentTopic.topic_number;
+
+    // First confirmation
     showModal(
         'تأكيد الرفع',
-        `هل رفعت فيديو "${currentTopic.title || '#' + currentTopic.topic_number}" على ${plName}؟`,
-        doConfirmUpload
+        `هل رفعت فيديو "${topicTitle}" على ${plName}؟`,
+        () => {
+            // Second confirmation
+            showModal(
+                'تأكيد نهائي',
+                `تأكد: هل فعلاً تم رفع "${topicTitle}" على ${plName}؟ العملية دي مش قابلة للتراجع.`,
+                doConfirmUpload
+            );
+        }
     );
 }
 
 async function doConfirmUpload() {
     try {
-        await api('POST', `/api/topics/${currentTopic.id}/platforms/${currentPlatformId}/confirm`, {
+        await api('POST', `/api/topics/${currentTopic.id}/platforms/${selectedPlatform.platform_id}/confirm`, {
             employee_id: currentUser.employee_id,
         });
         toast('تم تأكيد الرفع بنجاح', 'success');
 
-        // Refresh topic
-        currentTopic = await api('GET', `/api/topics/${currentTopic.id}`);
-        renderPlatformTabs();
-
-        // Select next pending platform
-        const nextPending = (currentTopic.platform_data || []).find(pd => pd.upload_status !== 'uploaded');
-        if (nextPending) {
-            selectPlatform(nextPending.platform_id);
-        } else {
-            document.getElementById('fields-section').innerHTML = '<div class="empty-state"><div class="icon">&#10003;</div><p>كل المنصات اترفعت! ممتاز</p></div>';
-            document.getElementById('confirm-section').style.display = 'none';
-            document.getElementById('schedule-section').innerHTML = '';
-        }
+        // Go back to topic list
+        showTopics();
     } catch (e) {
         toast(e.message, 'error');
     }
@@ -566,7 +753,7 @@ async function onTikTokUpload() {
     btn.textContent = 'جاري الفتح...';
 
     try {
-        const result = await api('POST', `/api/tiktok/upload/${currentTopic.id}/${currentPlatformId}`, {
+        const result = await api('POST', `/api/tiktok/upload/${currentTopic.id}/${selectedPlatform.platform_id}`, {
             employee_id: currentUser.employee_id,
         });
         if (result.status === 'error') {
@@ -602,6 +789,11 @@ function escapeHtml(s) {
     return div.innerHTML.replace(/"/g, '&quot;');
 }
 
+function escapeAttr(s) {
+    if (s === null || s === undefined) return '';
+    return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
 // ===== Init =====
 (async function init() {
     const saved = localStorage.getItem('user');
@@ -609,12 +801,11 @@ function escapeHtml(s) {
         try {
             const parsed = JSON.parse(saved);
             if (parsed && parsed.employee_id && parsed.name) {
-                // Re-validate employee is still active
                 try {
                     const emp = await api('GET', `/api/employees/${parsed.employee_id}`);
                     if (emp && emp.is_active) {
                         currentUser = parsed;
-                        showDashboard();
+                        goToChannels();
                         return;
                     }
                 } catch (e) { /* employee deleted or server down */ }
