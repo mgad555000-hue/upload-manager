@@ -8,6 +8,7 @@ let platformFields = {};  // {platform_id: [fields]}
 let channels = [];
 let currentTopic = null;
 let copiedFields = new Set();
+let forcedConfirmPending = false; // Track if forced confirm is showing
 
 // Navigation state
 let selectedChannel = null;   // {id, name, display_name, ...}
@@ -484,6 +485,8 @@ async function doRevertUpload() {
 }
 
 function goBack() {
+    if (forcedConfirmPending) return; // Can't go back while forced confirm is pending
+    closeForcedConfirm();
     showTopics();
 }
 
@@ -708,26 +711,53 @@ function updateConfirmState() {
     } else {
         progressEl.textContent = `تم نسخ ${copied} من ${total} حقول إجبارية`;
         btnEl.disabled = copied < total;
+
+        // All required fields copied → show forced confirm modal
+        if (copied >= total && !forcedConfirmPending) {
+            showForcedConfirm();
+        }
     }
 }
 
-// ===== Double Confirmation =====
+// ===== Forced Confirmation =====
+function showForcedConfirm() {
+    if (!currentTopic || !selectedPlatform) return;
+    forcedConfirmPending = true;
+    const topicTitle = currentTopic.title || '#' + currentTopic.topic_number;
+    const plName = selectedPlatform.display_name;
+    document.getElementById('forced-confirm-body').textContent =
+        `هل تم رفع "${topicTitle}" على ${plName}؟`;
+    document.getElementById('forced-confirm-modal').classList.remove('hidden');
+    // Enable beforeunload warning
+    window.addEventListener('beforeunload', beforeUnloadWarning);
+}
+
+function closeForcedConfirm() {
+    document.getElementById('forced-confirm-modal').classList.add('hidden');
+    forcedConfirmPending = false;
+    window.removeEventListener('beforeunload', beforeUnloadWarning);
+}
+
+function beforeUnloadWarning(e) {
+    e.preventDefault();
+    e.returnValue = 'فيه موضوع لم يتم تأكيد رفعه — هل متأكد إنك عايز تغادر؟';
+    return e.returnValue;
+}
+
+function onForcedConfirmClick() {
+    closeForcedConfirm();
+    doConfirmUpload();
+}
+
+// ===== Manual Confirmation (button click) =====
 function onConfirmClick() {
     const plName = selectedPlatform.display_name;
     const topicTitle = currentTopic.title || '#' + currentTopic.topic_number;
 
-    // First confirmation
     showModal(
         'تأكيد الرفع',
-        `هل رفعت فيديو "${topicTitle}" على ${plName}؟`,
-        () => {
-            // Second confirmation
-            showModal(
-                'تأكيد نهائي',
-                `تأكد: هل فعلاً تم رفع "${topicTitle}" على ${plName}؟ العملية دي مش قابلة للتراجع.`,
-                doConfirmUpload
-            );
-        }
+        `هل تم رفع "${topicTitle}" على ${plName}؟`,
+        doConfirmUpload
     );
 }
 
@@ -736,6 +766,7 @@ async function doConfirmUpload() {
         await api('POST', `/api/topics/${currentTopic.id}/platforms/${selectedPlatform.platform_id}/confirm`, {
             employee_id: currentUser.employee_id,
         });
+        closeForcedConfirm();
         toast('تم تأكيد الرفع بنجاح', 'success');
 
         // Go back to topic list

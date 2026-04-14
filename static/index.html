@@ -17,9 +17,20 @@
         <h3 id="modal-title"></h3>
         <p id="modal-body"></p>
         <div class="modal-actions">
-            <button class="cancel" onclick="closeModal()">إلغاء</button>
+            <button class="cancel" id="modal-cancel" onclick="closeModal()">إلغاء</button>
             <button class="confirm-modal" id="modal-confirm">تأكيد</button>
         </div>
+    </div>
+</div>
+
+<!-- Forced Confirm Modal (no close) -->
+<div id="forced-confirm-modal" class="modal-overlay hidden" style="z-index:999">
+    <div class="modal" style="text-align:center">
+        <div style="font-size:40px;margin-bottom:12px">&#9888;</div>
+        <h3 style="color:var(--primary);margin-bottom:12px">تم نسخ كل البيانات</h3>
+        <p style="font-size:14px;margin-bottom:8px" id="forced-confirm-body"></p>
+        <p style="font-size:12px;color:var(--text2);margin-bottom:16px">لازم تأكد إنك رفعت الموضوع قبل ما تكمل</p>
+        <button class="confirm-modal" style="width:100%;padding:14px;font-size:16px;font-weight:700" onclick="onForcedConfirmClick()">تأكيد تم الرفع</button>
     </div>
 </div>
 
