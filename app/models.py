@@ -158,7 +158,6 @@ class TopicResponse(BaseModel):
 
 class TopicBatchCreate(BaseModel):
     topics: List[TopicCreate]
-    schedule_start_from: Optional[str] = None  # ISO date: "2026-04-15" or "2026-04-15T08:00:00"
 
 
 # ========== Employees ==========

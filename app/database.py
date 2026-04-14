@@ -157,6 +157,17 @@ class UploadLog(Base):
     employee = relationship("Employee")
 
 
+class AuthToken(Base):
+    __tablename__ = "auth_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String, unique=True, nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    employee = relationship("Employee")
+
+
 class OAuthToken(Base):
     __tablename__ = "oauth_tokens"
 
