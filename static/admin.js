@@ -102,8 +102,8 @@ function logout() {
     if (saved) {
         try {
             const parsed = JSON.parse(saved);
-            if (parsed && parsed.employee_id && parsed.role === 'admin') {
-                // Re-validate employee is still active and admin
+            if (parsed && parsed.employee_id && parsed.role === 'admin' && parsed.token) {
+                // Try to validate employee is still active
                 try {
                     const emp = await api('GET', `/api/employees/${parsed.employee_id}`);
                     if (emp && emp.is_active && emp.role === 'admin') {
@@ -111,8 +111,20 @@ function logout() {
                         showAdmin();
                         return;
                     }
-                } catch (e) { /* employee deleted or server down */ }
-                localStorage.removeItem('admin_user');
+                    // Employee deactivated or role changed — logout
+                    localStorage.removeItem('admin_user');
+                } catch (e) {
+                    // Network error or server down — trust the saved session
+                    // Only logout if we got explicit 401 (handled by api() already)
+                    if (e.message && e.message.includes('الجلسة انتهت')) {
+                        // Token explicitly rejected by server — must re-login
+                        return;
+                    }
+                    // Server unreachable — keep the session alive
+                    currentUser = parsed;
+                    showAdmin();
+                    return;
+                }
             } else {
                 localStorage.removeItem('admin_user');
             }
