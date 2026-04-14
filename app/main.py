@@ -1031,15 +1031,17 @@ def dashboard_stats(
 
 @app.get("/api/nav/channel-counts")
 def nav_channel_counts(db: Session = Depends(get_db)):
-    """عدد المواضيع المعلقة لكل قناة"""
+    """عدد المواضيع المعلقة لكل قناة (عدد مواضيع مش platform_data)"""
     channels_list = db.query(Channel).filter(Channel.is_active == True).all()
     result = []
     for ch in channels_list:
-        pending = db.query(PlatformData).join(Topic).filter(
+        total = db.query(Topic).filter(Topic.channel_id == ch.id).count()
+        # Count topics that have at least one pending/locked platform_data
+        pending_topic_ids = db.query(PlatformData.topic_id).join(Topic).filter(
             Topic.channel_id == ch.id,
             PlatformData.upload_status.in_(["pending", "locked"]),
-        ).count()
-        total = db.query(Topic).filter(Topic.channel_id == ch.id).count()
+        ).distinct()
+        pending = pending_topic_ids.count()
         result.append({
             "channel_id": ch.id,
             "name": ch.name,
